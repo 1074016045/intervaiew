@@ -1,0 +1,7 @@
+.next
+node_modules
+data
+playwright-report
+test-results
+coverage
+src/infrastructure/db/migrations

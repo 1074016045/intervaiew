@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      AI_PROVIDER: mock
+      DATABASE_PATH: ./data/ci-intervaiew.db
+      MAX_RESUME_CHARACTERS: 20000
+      MAX_JOB_DESCRIPTION_CHARACTERS: 20000
+      AI_REQUEST_TIMEOUT_MS: 60000
+      AI_MAX_RETRIES: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:migrate
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
