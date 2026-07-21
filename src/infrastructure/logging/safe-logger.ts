@@ -7,6 +7,9 @@ type SafeLog = {
   httpStatus?: number;
   durationMs?: number;
   actionType?: string;
+  attemptId?: string;
+  recordingByteSize?: number;
+  trackRole?: "candidate" | "interviewer";
 };
 
 export const safeLogger = {

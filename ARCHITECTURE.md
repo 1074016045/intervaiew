@@ -54,11 +54,9 @@ Question regeneration replaces all old questions and session plan metadata in on
 
 Only question-plan generation invokes AI. Start, submit, next-question selection, repeat, clarification, cancellation, and completion use stored questions and deterministic application logic. This makes retries safe, reduces cost, and prevents new model output from changing the interview mid-session.
 
-## Why no multi-agent or voice in MVP
+## Guided Realtime Voice (v0.2)
 
-Question planning has one bounded generation task; multi-agent orchestration would add failure modes without user value. Voice adds materially different lifecycle, consent, synchronization, and browser-media concerns. The reserved `RealtimeInterviewClient` and `InterviewRecorder` ports deliberately have no adapter or UI.
-
-Phase two keeps text planning separate:
+Voice keeps text planning separate and does not create an autonomous interview agent:
 
 ```text
 DeepSeek Question Planning
@@ -71,3 +69,25 @@ Web Audio + MediaRecorder
 ```
 
 Recording must require explicit consent, keep separate interviewer/candidate tracks where technically available, and reconcile realtime events into the existing stable transcript model.
+
+The stored question plan is canonical. The browser adapter requests out-of-band speech for a stored question, clarification, or closing sentence. `server_vad` uses `create_response=false`, so candidate turn completion never lets the model freely answer or select the next question. Only a finalized input transcription calls the transactional `submit-voice-answer` use case; `InterviewController.submitAnswer()` selects the next stored question or completes the session. Realtime output transcripts are live UI data and never replace canonical questions.
+
+```text
+Voice React UI → RealtimeInterviewClient port → OpenAIRealtimeWebRTC adapter
+       │                       │
+       │                       └→ Fake adapter (tests/explicit non-production config)
+       ↓
+VoiceInterviewService → InterviewController → SQLite transaction
+```
+
+Domain and application code do not import the Agents SDK, WebRTC, MediaStream, MediaRecorder, audio elements, or Node filesystem APIs. The OpenAI adapter imports `RealtimeAgent`, `RealtimeSession`, and `OpenAIRealtimeWebRTC` from `@openai/agents/realtime`; tools, handoffs, MCP, tracing, and history audio storage are disabled.
+
+## Ephemeral connection and attempts
+
+`POST /api/realtime/client-secret` validates same-origin, a strict `{interviewId}` body, question-plan readiness, feature configuration, permanent server key presence, and a bounded mint rate. The server calls the GA `/v1/realtime/client_secrets` endpoint with fixed model, voice, transcription, instructions, and VAD configuration. The browser receives only a short-lived `ek_` value and safe connection metadata under `no-store`/`no-cache` headers. Each successful mint creates a `realtime_attempts` row; disconnect leaves the interview active so a new attempt can resume the same question.
+
+## Recording storage
+
+Recording consent is independent and false by default. The candidate `MediaStream` is shared with WebRTC and a candidate `MediaRecorder`. The OpenAI transport's peer connection supplies a remote interviewer stream to a separate recorder. Supported MIME types are selected at runtime. MediaRecorder failure never disables voice.
+
+Stopped tracks upload only to the application server. `recording_assets` stores metadata and a relative path; bytes live beneath `RECORDINGS_PATH`, never in SQLite. Upload uses bounded size/MIME validation, random server names, an atomic temporary-file rename, restrictive permissions, and database/file compensation. Playback supports byte ranges. Interview deletion validates and removes recording files before foreign-key cascade removes metadata.

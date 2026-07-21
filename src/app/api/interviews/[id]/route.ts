@@ -25,7 +25,7 @@ export async function GET(_: Request, context: Context) {
 export async function DELETE(_: Request, context: Context) {
   const { id } = await context.params;
   try {
-    if (!new InterviewService().delete(id))
+    if (!(await new InterviewService().delete(id)))
       throw new InterviewDomainError(
         "INTERVIEW_NOT_FOUND",
         "The interview could not be found.",

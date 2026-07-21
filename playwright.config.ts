@@ -1,4 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+const e2eDirectory = join(tmpdir(), `intervaiew-e2e-${process.pid}`);
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -12,7 +16,14 @@ export default defineConfig({
     url: "http://127.0.0.1:3100/api/health",
     reuseExistingServer: false,
     timeout: 120_000,
-    env: { AI_PROVIDER: "mock", DATABASE_PATH: "./data/e2e-intervaiew.db" },
+    env: {
+      AI_PROVIDER: "mock",
+      DATABASE_PATH: join(e2eDirectory, "intervaiew.db"),
+      REALTIME_FAKE_ENABLED: "true",
+      OPENAI_REALTIME_ENABLED: "false",
+      RECORDINGS_ENABLED: "true",
+      RECORDINGS_PATH: join(e2eDirectory, "recordings"),
+    },
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
 });

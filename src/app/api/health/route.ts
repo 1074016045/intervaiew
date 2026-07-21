@@ -22,6 +22,10 @@ export async function GET() {
       provider: provider.name,
       model,
       database: "ok",
+      realtimeEnabled: env.OPENAI_REALTIME_ENABLED,
+      recordingsEnabled: env.RECORDINGS_ENABLED,
+      realtimeFakeEnabled:
+        process.env.NODE_ENV !== "production" && env.REALTIME_FAKE_ENABLED,
     });
   } catch (error) {
     return apiErrorResponse(error, { route: "/api/health" });

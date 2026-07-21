@@ -22,3 +22,8 @@ export function getDatabase(): DatabaseConnection {
   connection ??= createDatabase(getServerEnv().DATABASE_PATH);
   return connection;
 }
+
+export function resetDatabaseForTests() {
+  connection?.sqlite.close();
+  connection = undefined;
+}

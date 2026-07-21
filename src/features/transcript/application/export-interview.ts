@@ -10,6 +10,16 @@ type ExportTranscript = ReturnType<
 export function buildJsonExport(
   session: ExportDetail,
   transcript: ExportTranscript,
+  recordings: Array<{
+    id: string;
+    trackRole: "candidate" | "interviewer";
+    fileName: string;
+    mimeType: string;
+    byteSize: number;
+    durationMs: number | null;
+    startOffsetMs: number;
+    createdAt: Date;
+  }> = [],
 ) {
   return {
     session,
@@ -18,12 +28,20 @@ export function buildJsonExport(
       questions: session.questions,
     },
     transcript,
+    recordings,
   };
 }
 
 export function buildTxtExport(
   session: ExportDetail,
   transcript: ExportTranscript,
+  recordings: Array<{
+    trackRole: "candidate" | "interviewer";
+    fileName: string;
+    mimeType: string;
+    byteSize: number;
+    durationMs: number | null;
+  }> = [],
 ) {
   const duration =
     session.durationSeconds == null ? "—" : `${session.durationSeconds}s`;
@@ -42,6 +60,14 @@ export function buildTxtExport(
       return `[${time}] ${role}\n${item.text}`;
     })
     .join("\n\n");
+  const recordingList = recordings.length
+    ? recordings
+        .map(
+          (asset) =>
+            `${asset.trackRole}: ${asset.fileName} (${asset.mimeType}, ${asset.byteSize} bytes${asset.durationMs == null ? "" : `, ${asset.durationMs} ms`})`,
+        )
+        .join("\n")
+    : "None";
   return `IntervAIew — 面面具到
 
 Title: ${session.title}
@@ -62,6 +88,10 @@ ${questionPlan}
 Transcript
 
 ${items}
+
+Recordings (metadata only; audio is not embedded)
+
+${recordingList}
 `;
 }
 

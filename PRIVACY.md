@@ -2,11 +2,16 @@
 
 IntervAIew is local-first, not offline-only in every provider mode.
 
-- **Mock Mode:** makes no external AI requests. Resume, JD, session data, answers, and transcript remain in the local SQLite database.
-- **DeepSeek Mode:** sends resume text, job description, target role/company, interview type, difficulty, language, and question count to the configured DeepSeek API only while creating a question plan.
-- **OpenAI Mode:** sends the same question-planning data to OpenAI only while creating a question plan.
-- Candidate answers and the MVP transcript are stored locally and are not sent to any AI provider.
+- **Mock planning/text mode:** makes no external AI request.
+- **DeepSeek planning:** sends resume, job description, role/company, interview settings, language, and question count to DeepSeek only to create the fixed question plan. DeepSeek never receives voice audio or recorded tracks.
+- **OpenAI text planning:** sends the same planning material to OpenAI only while creating the fixed plan.
+- **OpenAI Realtime voice:** after required explicit consent, sends microphone audio to OpenAI Realtime and receives interviewer audio plus transcription events. Resume and job-description text are not resent to the Realtime session.
+- **Fake Realtime tests:** do not request a microphone or contact OpenAI.
 
-The default database is `./data/intervaiew.db` on the machine running the app. Individual interviews can be permanently deleted from History or Detail; foreign-key cascade removes questions, transcript items, and action receipts. The application uses no analytics, tracking pixels, remote fonts, cloud database, audio capture, or file upload.
+Input transcription may not be word-for-word exact. Only finalized candidate transcription is stored as a voice answer; interim text remains in browser memory. Output transcript is used for live display and never replaces the stored canonical question. Voice transcripts are not used for scoring or evaluation.
 
-Logs contain operational codes and identifiers only. They do not include API keys, resume/JD/answer/transcript text, prompts, raw provider responses, or reasoning content. Review the privacy terms of an external provider before enabling it.
+Dual-track recording is separately consented, optional, and off by default. When enabled, candidate and interviewer tracks are saved separately. When running locally, SQLite is at `./data/intervaiew.db` and recording files are beneath `./data/recordings` on that machine. When deployed to a remote server, “local storage” means that server's filesystem—not the user's device. Audio is not embedded in TXT/JSON exports and is not uploaded to DeepSeek or third-party storage.
+
+Deleting an asset removes its file and metadata; deleting an interview removes associated recording files and cascades questions, transcripts, attempts, assets, and action receipts. Protect host filesystem access and follow applicable retention requirements.
+
+Logs contain safe operational codes and identifiers only. They exclude permanent and ephemeral credentials, resume/JD/answer/transcript text, prompts, provider payloads/events, raw audio, SDP, ICE credentials, and absolute paths. Review provider privacy terms before enabling external modes.

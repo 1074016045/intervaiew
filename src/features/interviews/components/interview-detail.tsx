@@ -9,6 +9,7 @@ import type {
 import { InterviewSummary } from "./interview-summary";
 import { QuestionPlanView } from "@/features/question-planner/components/question-plan-view";
 import { TranscriptPanel } from "@/features/transcript/components/transcript-panel";
+import { RecordingAssets } from "@/features/recording/components/recording-assets";
 
 export function InterviewDetail({ id }: { id: string }) {
   const router = useRouter();
@@ -81,9 +82,14 @@ export function InterviewDetail({ id }: { id: string }) {
             </Link>
           )}
           {item.status === "active" && (
-            <Link className="button" href={`/interviews/${id}/text`}>
-              Continue Interview
-            </Link>
+            <>
+              <Link className="button" href={`/interviews/${id}/text`}>
+                Continue Text Interview
+              </Link>
+              <Link className="button secondary" href={`/interviews/${id}/voice`}>
+                Resume Voice Interview
+              </Link>
+            </>
           )}
           <a
             className="button secondary"
@@ -112,6 +118,7 @@ export function InterviewDetail({ id }: { id: string }) {
         questions={item.questions}
       />
       <TranscriptPanel items={transcript} />
+      <RecordingAssets interviewId={id} />
     </div>
   );
 }

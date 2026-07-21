@@ -3,6 +3,7 @@ import { ZodError } from "zod";
 import { AiError } from "@/features/ai/domain/ai-errors";
 import { InterviewDomainError } from "@/features/interviews/domain/interview-errors";
 import { safeLogger } from "@/infrastructure/logging/safe-logger";
+import { RealtimeError } from "@/features/realtime/domain/realtime-errors";
 
 const aiStatuses: Record<string, number> = {
   AI_CONFIGURATION_ERROR: 500,
@@ -14,6 +15,24 @@ const aiStatuses: Record<string, number> = {
   AI_TIMEOUT: 504,
   AI_INVALID_RESPONSE: 502,
   AI_UNKNOWN_ERROR: 502,
+};
+
+const realtimeStatuses: Record<string, number> = {
+  INVALID_ORIGIN: 403,
+  REALTIME_DISABLED: 503,
+  REALTIME_CONFIGURATION_ERROR: 500,
+  REALTIME_AUTHENTICATION_ERROR: 502,
+  REALTIME_RATE_LIMITED: 429,
+  REALTIME_PROVIDER_UNAVAILABLE: 503,
+  REALTIME_TOKEN_CREATION_FAILED: 502,
+  REALTIME_INTERVIEW_NOT_READY: 409,
+  REALTIME_SESSION_EXPIRED: 410,
+  RECORDING_DISABLED: 503,
+  RECORDING_FILE_REQUIRED: 400,
+  UNSAFE_RECORDING_MIME: 415,
+  RECORDING_SIZE_INVALID: 413,
+  RECORDING_NOT_FOUND: 404,
+  UNSAFE_RECORDING_PATH: 400,
 };
 
 export function apiErrorResponse(
@@ -35,6 +54,10 @@ export function apiErrorResponse(
     code = error.code;
     message = error.message;
     status = aiStatuses[code] ?? 502;
+  } else if (error instanceof RealtimeError) {
+    code = error.code;
+    message = error.message;
+    status = realtimeStatuses[code] ?? 502;
   }
   safeLogger.error("API request failed", {
     errorCode: code,
