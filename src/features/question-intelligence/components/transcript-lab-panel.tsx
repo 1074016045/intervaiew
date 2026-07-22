@@ -18,6 +18,7 @@ import type {
 } from "../domain/transcript";
 import { FakeTranscriptStreamClient } from "../infrastructure/fake/fake-transcript-stream-client";
 import { createTranscriptLabScenario } from "../infrastructure/fake/fake-transcript-scenarios";
+import type { QuestionBoundaryState } from "../application/question-segmentation-service";
 
 const emptySnapshot: TranscriptBufferSnapshot = Object.freeze({
   finalizedText: "",
@@ -44,10 +45,38 @@ export function TranscriptLabPanel({
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [boundaryBusy, setBoundaryBusy] = useState(false);
+  const [boundary, setBoundary] = useState<QuestionBoundaryState | null>(null);
   const bufferRef = useRef(new TranscriptBuffer());
   const clientRef = useRef<TranscriptStreamClient | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const mountedRef = useRef(true);
+  const boundaryRevisionRef = useRef<number | null>(null);
+  const boundaryRequestRef = useRef<AbortController | null>(null);
+
+  const applyBoundary = useCallback((state: QuestionBoundaryState) => {
+    boundaryRevisionRef.current = state.candidate?.revision ?? null;
+    setBoundary(state);
+  }, []);
+
+  const loadBoundary = useCallback(
+    async (signal?: AbortSignal) => {
+      const response = await fetch(
+        `/api/analysis-sessions/${id}/question-boundary`,
+        { cache: "no-store", signal },
+      );
+      const payload = (await response.json()) as QuestionBoundaryState &
+        ApiErrorPayload;
+      if (!response.ok)
+        throw new Error(
+          payload.error?.message ??
+            "Question boundary state could not be loaded.",
+        );
+      if (mountedRef.current) applyBoundary(payload);
+      return payload;
+    },
+    [applyBoundary, id],
+  );
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -70,7 +99,7 @@ export function TranscriptLabPanel({
   useEffect(() => {
     mountedRef.current = true;
     const controller = new AbortController();
-    load(controller.signal)
+    Promise.all([load(controller.signal), loadBoundary(controller.signal)])
       .catch((caught) => {
         if (caught instanceof DOMException && caught.name === "AbortError")
           return;
@@ -87,12 +116,13 @@ export function TranscriptLabPanel({
     return () => {
       mountedRef.current = false;
       controller.abort();
+      boundaryRequestRef.current?.abort();
       unsubscribeRef.current?.();
       unsubscribeRef.current = null;
       void clientRef.current?.dispose();
       clientRef.current = null;
     };
-  }, [load]);
+  }, [load, loadBoundary]);
 
   const disposeLocalClient = useCallback(async () => {
     unsubscribeRef.current?.();
@@ -166,8 +196,61 @@ export function TranscriptLabPanel({
           ),
         };
       });
+      boundaryRequestRef.current?.abort();
+      await loadBoundary();
     },
-    [id],
+    [id, loadBoundary],
+  );
+
+  const boundaryMutation = useCallback(
+    async (path: string, body: Readonly<Record<string, string | number>>) => {
+      if (boundaryBusy) return;
+      const submittedRevision = boundaryRevisionRef.current;
+      const controller = new AbortController();
+      boundaryRequestRef.current?.abort();
+      boundaryRequestRef.current = controller;
+      setBoundaryBusy(true);
+      setError("");
+      try {
+        const response = await fetch(
+          `/api/analysis-sessions/${id}/question-boundary/${path}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            cache: "no-store",
+            signal: controller.signal,
+          },
+        );
+        const payload = (await response.json()) as QuestionBoundaryState &
+          ApiErrorPayload;
+        if (!response.ok)
+          throw new Error(
+            payload.error?.message ?? "The question boundary action failed.",
+          );
+        if (
+          mountedRef.current &&
+          (submittedRevision === boundaryRevisionRef.current ||
+            path === "merge-previous" ||
+            path === "undo")
+        )
+          applyBoundary(payload);
+      } catch (caught) {
+        if (caught instanceof DOMException && caught.name === "AbortError")
+          return;
+        if (mountedRef.current)
+          setError(
+            caught instanceof Error
+              ? caught.message
+              : "The question boundary action failed.",
+          );
+      } finally {
+        if (boundaryRequestRef.current === controller)
+          boundaryRequestRef.current = null;
+        if (mountedRef.current) setBoundaryBusy(false);
+      }
+    },
+    [applyBoundary, boundaryBusy, id],
   );
 
   const handleStreamEvent = useCallback(
@@ -366,6 +449,16 @@ export function TranscriptLabPanel({
 
   const finalText = detail.segments.map((segment) => segment.text).join(" ");
   const canStart = snapshot.state === "idle" || snapshot.state === "stopped";
+  const candidate = boundary?.candidate ?? null;
+  const latestDecision = boundary?.latestDecision ?? null;
+  const candidateSegments = candidate
+    ? detail.segments.filter((segment) =>
+        candidate.segmentIds.includes(segment.id),
+      )
+    : [];
+  const boundaryActionsAllowed = ["active", "paused", "completed"].includes(
+    detail.session.status,
+  );
 
   return (
     <div className="stack">
@@ -463,6 +556,183 @@ export function TranscriptLabPanel({
             Delete Session
           </button>
         </div>
+      </section>
+
+      <section className="card stack" aria-labelledby="question-boundary-title">
+        <div>
+          <p className="question-number">Final interviewer segments only</p>
+          <h2 id="question-boundary-title">Question Boundary</h2>
+        </div>
+        <dl className="metadata boundary-metadata">
+          <div>
+            <dt>Candidate revision</dt>
+            <dd data-testid="candidate-revision">
+              {candidate?.revision ?? "—"}
+            </dd>
+          </div>
+          <div>
+            <dt>Pause duration</dt>
+            <dd>{candidate ? `${candidate.pauseAfterMs} ms` : "—"}</dd>
+          </div>
+          <div>
+            <dt>Boundary status</dt>
+            <dd data-testid="boundary-status">
+              {latestDecision?.status ?? "pending"}
+            </dd>
+          </div>
+          <div>
+            <dt>Confidence</dt>
+            <dd>
+              {latestDecision ? latestDecision.confidence.toFixed(2) : "—"}
+            </dd>
+          </div>
+          <div>
+            <dt>Decision source</dt>
+            <dd>{latestDecision?.decidedBy ?? "—"}</dd>
+          </div>
+          <div>
+            <dt>Reason code</dt>
+            <dd>{latestDecision?.reasonCode ?? "—"}</dd>
+          </div>
+          <div>
+            <dt>Semantic used</dt>
+            <dd>{latestDecision?.semanticProviderUsed ? "yes" : "no"}</dd>
+          </div>
+          <div>
+            <dt>Semantic calls</dt>
+            <dd>{boundary?.semanticProviderCallCount ?? 0}</dd>
+          </div>
+        </dl>
+        <div>
+          <h3>Current Question Candidate</h3>
+          <p className="lab-transcript" data-testid="question-candidate">
+            {candidate?.text ?? "No current interviewer candidate."}
+          </p>
+        </div>
+        <div>
+          <h3>Deterministic signals</h3>
+          {boundary?.deterministic?.signals.length ? (
+            <ul className="signal-list">
+              {boundary.deterministic.signals.map((signal) => (
+                <li key={`${signal.code}-${signal.kind}`}>
+                  <code>{signal.code}</code> · {signal.kind} ·{" "}
+                  {signal.confidence.toFixed(2)}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">No deterministic signals.</p>
+          )}
+        </div>
+        <div>
+          <h3>Candidate source segments</h3>
+          {candidateSegments.length ? (
+            <ol className="segment-timeline compact">
+              {candidateSegments.map((segment) => (
+                <li key={segment.id}>
+                  Sequence {segment.sequence}: {segment.text}
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="muted">No candidate source segments.</p>
+          )}
+        </div>
+        <div className="actions">
+          <button
+            className="button"
+            type="button"
+            disabled={!candidate || boundaryBusy || !boundaryActionsAllowed}
+            onClick={() =>
+              candidate &&
+              void boundaryMutation("evaluate", {
+                actionId: crypto.randomUUID(),
+                candidateRevision: candidate.revision,
+              })
+            }
+          >
+            Evaluate Boundary
+          </button>
+          <button
+            className="button secondary"
+            type="button"
+            disabled={!candidate || boundaryBusy || !boundaryActionsAllowed}
+            onClick={() =>
+              candidate &&
+              void boundaryMutation("force-finalize", {
+                actionId: crypto.randomUUID(),
+                candidateRevision: candidate.revision,
+              })
+            }
+          >
+            Force Finalize
+          </button>
+        </div>
+      </section>
+
+      <section className="card stack">
+        <div>
+          <p className="question-number">Persisted with source traceability</p>
+          <h2>Finalized Questions</h2>
+        </div>
+        {boundary?.finalizedQuestions.length ? (
+          <ol className="segment-timeline">
+            {boundary.finalizedQuestions.map((question, index) => (
+              <li key={question.id} data-testid="finalized-question">
+                <div className="message-head">
+                  <strong>
+                    Question {index + 1} · revision {question.revision}
+                  </strong>
+                  <span>{question.undoneAt ? "undone" : "active"}</span>
+                </div>
+                <p>{question.text}</p>
+                <p className="muted">
+                  Sequences {question.firstSequence}–{question.lastSequence} ·{" "}
+                  {question.sourceSegmentIds.length} source segment(s)
+                </p>
+                <div className="actions compact-actions">
+                  <button
+                    className="button secondary"
+                    type="button"
+                    disabled={
+                      boundaryBusy ||
+                      Boolean(question.undoneAt) ||
+                      index === 0 ||
+                      !boundaryActionsAllowed
+                    }
+                    onClick={() =>
+                      void boundaryMutation("merge-previous", {
+                        actionId: crypto.randomUUID(),
+                        targetQuestionId: question.id,
+                      })
+                    }
+                  >
+                    Merge with Previous
+                  </button>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    disabled={
+                      boundaryBusy ||
+                      Boolean(question.undoneAt) ||
+                      !boundaryActionsAllowed
+                    }
+                    onClick={() =>
+                      void boundaryMutation("undo", {
+                        actionId: crypto.randomUUID(),
+                        targetQuestionId: question.id,
+                      })
+                    }
+                  >
+                    Undo Finalize
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="muted">No finalized questions yet.</p>
+        )}
       </section>
 
       <div className="two-col">

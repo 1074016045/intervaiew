@@ -12,8 +12,18 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["tests/unit/**/*.test.{ts,tsx}", "tests/integration/**/*.test.ts"],
-    env: { AI_PROVIDER: "mock", DATABASE_PATH: ":memory:" },
+    include: [
+      "tests/unit/**/*.test.{ts,tsx}",
+      "tests/integration/**/*.test.ts",
+    ],
+    env: {
+      AI_PROVIDER: "mock",
+      DATABASE_PATH: ":memory:",
+      QUESTION_BOUNDARY_FAKE_SEMANTIC_ENABLED: "true",
+      QUESTION_BOUNDARY_SHORT_PAUSE_MS: "500",
+      QUESTION_BOUNDARY_MEDIUM_PAUSE_MS: "1400",
+      QUESTION_BOUNDARY_LONG_PAUSE_MS: "3000",
+    },
     restoreMocks: true,
   },
 });
