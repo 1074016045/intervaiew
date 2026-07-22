@@ -12,10 +12,12 @@ import { StructuredQuestionPlanner } from "@/features/question-planner/applicati
 import { getDatabase } from "@/infrastructure/db/client";
 import { getServerEnv } from "@/infrastructure/env/server-env";
 import { InterviewRepository } from "@/infrastructure/repositories/interview.repository";
+import { RecordingStorageService } from "@/features/recording/application/recording-storage-service";
 
 export class InterviewService {
   constructor(
     private readonly repository = new InterviewRepository(getDatabase().db),
+    private readonly recordingStorage = new RecordingStorageService(),
   ) {}
   create(input: unknown) {
     const env = getServerEnv();
@@ -35,7 +37,11 @@ export class InterviewService {
   transcript(id: string) {
     return this.repository.getTranscript(id);
   }
-  delete(id: string) {
+  recordings(id: string) {
+    return this.recordingStorage.list(id);
+  }
+  async delete(id: string) {
+    await this.recordingStorage.deleteForInterview(id);
     return this.repository.delete(id);
   }
 

@@ -1,5 +1,5 @@
 export const transcriptRoles = ["interviewer", "candidate", "system"] as const;
-export const transcriptSources = ["text", "control"] as const;
+export const transcriptSources = ["text", "control", "voice"] as const;
 export const transcriptEventTypes = [
   "question",
   "answer",
@@ -21,5 +21,6 @@ export type TranscriptItem = {
   text: string;
   questionSequence: number | null;
   actionId: string | null;
+  providerItemId: string | null;
   createdAt: Date;
 };

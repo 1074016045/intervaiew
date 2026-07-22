@@ -28,10 +28,15 @@ export async function GET(
         "The interview could not be found.",
       );
     const transcript = service.transcript(id);
+    const recordings = service.recordings(id);
     const body =
       format === "txt"
-        ? buildTxtExport(session, transcript)
-        : JSON.stringify(buildJsonExport(session, transcript), null, 2);
+        ? buildTxtExport(session, transcript, recordings)
+        : JSON.stringify(
+            buildJsonExport(session, transcript, recordings),
+            null,
+            2,
+          );
     return new Response(body, {
       headers: {
         "Content-Type":

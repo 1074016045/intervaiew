@@ -45,11 +45,12 @@ export type TranscriptView = {
   sessionId: string;
   sequence: number;
   role: "interviewer" | "candidate" | "system";
-  source: "text" | "control";
+  source: "text" | "control" | "voice";
   eventType: string;
   text: string;
   questionSequence: number | null;
   actionId: string | null;
+  providerItemId?: string | null;
   createdAt: string;
 };
 export type InterviewSummaryView = Pick<

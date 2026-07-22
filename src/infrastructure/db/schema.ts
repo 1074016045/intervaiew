@@ -16,6 +16,8 @@ import {
   transcriptRoles,
   transcriptSources,
 } from "@/features/transcript/domain/transcript-item";
+import { realtimeAttemptStatuses } from "@/features/realtime/domain/realtime-attempt";
+import { recordingTrackRoles } from "@/features/recording/domain/recording-asset";
 
 export const interviewSessions = sqliteTable(
   "interview_sessions",
@@ -87,6 +89,7 @@ export const transcriptItems = sqliteTable(
     text: text("text").notNull(),
     questionSequence: integer("question_sequence"),
     actionId: text("action_id"),
+    providerItemId: text("provider_item_id"),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   },
   (table) => [
@@ -94,6 +97,62 @@ export const transcriptItems = sqliteTable(
       table.sessionId,
       table.sequence,
     ),
+    uniqueIndex("transcript_items_session_provider_item_uq").on(
+      table.sessionId,
+      table.providerItemId,
+    ),
+  ],
+);
+
+export const realtimeAttempts = sqliteTable(
+  "realtime_attempts",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => interviewSessions.id, { onDelete: "cascade" }),
+    provider: text("provider", { enum: ["openai", "fake"] }).notNull(),
+    model: text("model").notNull(),
+    voice: text("voice").notNull(),
+    status: text("status", { enum: realtimeAttemptStatuses }).notNull(),
+    recordingConsent: integer("recording_consent", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    connectedAt: integer("connected_at", { mode: "timestamp_ms" }),
+    disconnectedAt: integer("disconnected_at", { mode: "timestamp_ms" }),
+    endedAt: integer("ended_at", { mode: "timestamp_ms" }),
+    failureCode: text("failure_code"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    index("realtime_attempts_session_idx").on(table.sessionId),
+    index("realtime_attempts_status_idx").on(table.status),
+  ],
+);
+
+export const recordingAssets = sqliteTable(
+  "recording_assets",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => interviewSessions.id, { onDelete: "cascade" }),
+    realtimeAttemptId: text("realtime_attempt_id")
+      .notNull()
+      .references(() => realtimeAttempts.id, { onDelete: "cascade" }),
+    trackRole: text("track_role", { enum: recordingTrackRoles }).notNull(),
+    relativePath: text("relative_path").notNull(),
+    fileName: text("file_name").notNull(),
+    mimeType: text("mime_type").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    durationMs: integer("duration_ms"),
+    startOffsetMs: integer("start_offset_ms").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    index("recording_assets_session_idx").on(table.sessionId),
+    index("recording_assets_attempt_idx").on(table.realtimeAttemptId),
   ],
 );
 
@@ -121,4 +180,6 @@ export const schema = {
   interviewQuestions,
   transcriptItems,
   interviewActions,
+  realtimeAttempts,
+  recordingAssets,
 };

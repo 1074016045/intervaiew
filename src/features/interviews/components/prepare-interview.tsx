@@ -5,7 +5,12 @@ import type { InterviewDetailView } from "../domain/interview-view.types";
 import { InterviewSummary } from "./interview-summary";
 import { QuestionPlanView } from "@/features/question-planner/components/question-plan-view";
 
-type Health = { provider: "mock" | "deepseek" | "openai"; model: string };
+type Health = {
+  provider: "mock" | "deepseek" | "openai";
+  model: string;
+  realtimeEnabled: boolean;
+  realtimeFakeEnabled: boolean;
+};
 export function PrepareInterview({ id }: { id: string }) {
   const router = useRouter();
   const [item, setItem] = useState<InterviewDetailView | null>(null);
@@ -143,7 +148,22 @@ export function PrepareInterview({ id }: { id: string }) {
           >
             Start Text Interview
           </button>
+          <button
+            className="button secondary"
+            onClick={() => router.push(`/interviews/${id}/voice`)}
+            disabled={
+              busy ||
+              item.status !== "ready" ||
+              !item.questions.length ||
+              !(health?.realtimeEnabled || health?.realtimeFakeEnabled)
+            }
+          >
+            Start Voice Interview
+          </button>
         </div>
+        {health && !health.realtimeEnabled && !health.realtimeFakeEnabled && (
+          <p className="muted">Voice mode is not configured on this server.</p>
+        )}
         {error && (
           <p className="error" role="alert">
             {error} {item.failureCode && `(${item.failureCode})`}

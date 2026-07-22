@@ -1,6 +1,16 @@
+export type RecordedTrack = {
+  role: "candidate" | "interviewer";
+  blob: Blob;
+  mimeType: string;
+  durationMs: number;
+  startOffsetMs: number;
+};
+
 export interface InterviewRecorder {
-  prepare(): Promise<void>;
+  prepare(input: { candidateStream: unknown }): Promise<void>;
+  attachInterviewerStream(stream: unknown): void;
   start(): void;
-  stop(): Promise<void>;
+  stop(): Promise<RecordedTrack[]>;
   dispose(): Promise<void>;
+  isSupported(): boolean;
 }

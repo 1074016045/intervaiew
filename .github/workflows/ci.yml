@@ -14,8 +14,13 @@ jobs:
       MAX_JOB_DESCRIPTION_CHARACTERS: 20000
       AI_REQUEST_TIMEOUT_MS: 60000
       AI_MAX_RETRIES: 2
+      OPENAI_REALTIME_ENABLED: "false"
+      REALTIME_FAKE_ENABLED: "true"
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.1
       - uses: actions/setup-node@v4
         with:
           node-version: 24
