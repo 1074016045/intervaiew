@@ -32,6 +32,16 @@ import {
   questionCandidateStatuses,
 } from "@/features/question-intelligence/domain/question-boundary";
 import { questionBoundaryActionTypes } from "@/features/question-intelligence/application/question-boundary-repository.port";
+import {
+  clarificationReasonVocabulary,
+  expectedAnswerModes,
+  questionFamilies,
+  requestedDimensionVocabulary,
+  understandingConstraintKinds,
+  understandingDecisionSources,
+  understandingLanguages,
+  understandingStatuses,
+} from "@/features/question-intelligence/domain/question-understanding";
 
 export const interviewSessions = sqliteTable(
   "interview_sessions",
@@ -415,6 +425,87 @@ export const questionBoundaryActions = sqliteTable(
   ],
 );
 
+export const questionUnderstandings = sqliteTable(
+  "question_understandings",
+  {
+    id: text("id").primaryKey(),
+    analysisSessionId: text("analysis_session_id").notNull().references(() => analysisSessions.id, { onDelete: "cascade" }),
+    finalizedQuestionId: text("finalized_question_id").notNull().references(() => finalizedQuestions.id, { onDelete: "cascade" }),
+    finalizedQuestionRevision: integer("finalized_question_revision").notNull(),
+    sourceBoundaryDecisionId: text("source_boundary_decision_id").notNull().references(() => boundaryDecisions.id, { onDelete: "cascade" }),
+    understandingRevision: integer("understanding_revision").notNull(),
+    language: text("language", { enum: understandingLanguages }).notNull(),
+    questionFamily: text("question_family", { enum: questionFamilies }).notNull(),
+    expectedAnswerMode: text("expected_answer_mode", { enum: expectedAnswerModes }).notNull(),
+    requiresClarification: integer("requires_clarification", { mode: "boolean" }).notNull(),
+    confidence: integer("confidence").notNull(),
+    decidedBy: text("decided_by", { enum: understandingDecisionSources }).notNull(),
+    semanticProviderUsed: integer("semantic_provider_used", { mode: "boolean" }).notNull(),
+    status: text("status", { enum: understandingStatuses }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("question_understandings_question_revision_uq").on(table.finalizedQuestionId, table.finalizedQuestionRevision),
+    index("question_understandings_session_question_idx").on(table.analysisSessionId, table.finalizedQuestionId),
+    check("question_understandings_finalized_revision_ck", sql`${table.finalizedQuestionRevision} > 0`),
+    check("question_understandings_revision_ck", sql`${table.understandingRevision} > 0`),
+    check("question_understandings_confidence_ck", sql`${table.confidence} >= 0 and ${table.confidence} <= 10000`),
+  ],
+);
+
+export const questionUnderstandingDimensions = sqliteTable(
+  "question_understanding_dimensions",
+  {
+    understandingId: text("understanding_id").notNull().references(() => questionUnderstandings.id, { onDelete: "cascade" }),
+    dimension: text("dimension", { enum: requestedDimensionVocabulary }).notNull(),
+    sequence: integer("sequence").notNull(),
+  },
+  (table) => [
+    uniqueIndex("question_understanding_dimensions_sequence_uq").on(table.understandingId, table.sequence),
+    uniqueIndex("question_understanding_dimensions_value_uq").on(table.understandingId, table.dimension),
+    check("question_understanding_dimensions_sequence_ck", sql`${table.sequence} > 0`),
+  ],
+);
+
+export const questionUnderstandingConstraints = sqliteTable(
+  "question_understanding_constraints",
+  {
+    understandingId: text("understanding_id").notNull().references(() => questionUnderstandings.id, { onDelete: "cascade" }),
+    kind: text("kind", { enum: understandingConstraintKinds }).notNull(),
+    value: text("value").notNull(), sourceText: text("source_text").notNull(), sequence: integer("sequence").notNull(),
+  },
+  (table) => [uniqueIndex("question_understanding_constraints_sequence_uq").on(table.understandingId, table.sequence), check("question_understanding_constraints_sequence_ck", sql`${table.sequence} > 0`)],
+);
+
+export const questionUnderstandingFocusTerms = sqliteTable(
+  "question_understanding_focus_terms",
+  {
+    understandingId: text("understanding_id").notNull().references(() => questionUnderstandings.id, { onDelete: "cascade" }),
+    normalized: text("normalized").notNull(), sourceText: text("source_text").notNull(), sequence: integer("sequence").notNull(),
+  },
+  (table) => [uniqueIndex("question_understanding_focus_terms_sequence_uq").on(table.understandingId, table.sequence), uniqueIndex("question_understanding_focus_terms_normalized_uq").on(table.understandingId, table.normalized), check("question_understanding_focus_terms_sequence_ck", sql`${table.sequence} > 0`)],
+);
+
+export const questionUnderstandingClarifications = sqliteTable(
+  "question_understanding_clarifications",
+  {
+    understandingId: text("understanding_id").notNull().references(() => questionUnderstandings.id, { onDelete: "cascade" }),
+    reason: text("reason", { enum: clarificationReasonVocabulary }).notNull(), sequence: integer("sequence").notNull(),
+  },
+  (table) => [uniqueIndex("question_understanding_clarifications_sequence_uq").on(table.understandingId, table.sequence), uniqueIndex("question_understanding_clarifications_reason_uq").on(table.understandingId, table.reason), check("question_understanding_clarifications_sequence_ck", sql`${table.sequence} > 0`)],
+);
+
+export const questionUnderstandingActions = sqliteTable(
+  "question_understanding_actions",
+  {
+    id: text("id").primaryKey(), analysisSessionId: text("analysis_session_id").notNull().references(() => analysisSessions.id, { onDelete: "cascade" }),
+    actionId: text("action_id").notNull(), finalizedQuestionId: text("finalized_question_id").notNull().references(() => finalizedQuestions.id, { onDelete: "cascade" }),
+    resultUnderstandingId: text("result_understanding_id").references(() => questionUnderstandings.id, { onDelete: "set null" }), createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [uniqueIndex("question_understanding_actions_session_action_uq").on(table.analysisSessionId, table.actionId)],
+);
+
 export const schema = {
   interviewSessions,
   interviewQuestions,
@@ -430,4 +521,10 @@ export const schema = {
   finalizedQuestions,
   finalizedQuestionSegments,
   questionBoundaryActions,
+  questionUnderstandings,
+  questionUnderstandingDimensions,
+  questionUnderstandingConstraints,
+  questionUnderstandingFocusTerms,
+  questionUnderstandingClarifications,
+  questionUnderstandingActions,
 };

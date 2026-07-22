@@ -31,6 +31,7 @@ export const serverEnvSchema = z
     REALTIME_FAKE_ENABLED: booleanString("false"),
     TRANSCRIPT_LAB_FAKE_ENABLED: booleanString("false"),
     QUESTION_BOUNDARY_FAKE_SEMANTIC_ENABLED: booleanString("false"),
+    QUESTION_UNDERSTANDING_FAKE_SEMANTIC_ENABLED: booleanString("false"),
     QUESTION_BOUNDARY_SHORT_PAUSE_MS: z.coerce
       .number()
       .int()
