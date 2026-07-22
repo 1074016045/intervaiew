@@ -18,6 +18,11 @@ import {
 } from "@/features/transcript/domain/transcript-item";
 import { realtimeAttemptStatuses } from "@/features/realtime/domain/realtime-attempt";
 import { recordingTrackRoles } from "@/features/recording/domain/recording-asset";
+import {
+  analysisSessionModes,
+  analysisSessionStatuses,
+} from "@/features/question-intelligence/domain/analysis-session";
+import { transcriptSpeakerRoles } from "@/features/question-intelligence/domain/transcript";
 
 export const interviewSessions = sqliteTable(
   "interview_sessions",
@@ -175,6 +180,57 @@ export const interviewActions = sqliteTable(
   ],
 );
 
+export const analysisSessions = sqliteTable(
+  "analysis_sessions",
+  {
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    mode: text("mode", { enum: analysisSessionModes }).notNull(),
+    status: text("status", { enum: analysisSessionStatuses }).notNull(),
+    startedAt: integer("started_at", { mode: "timestamp_ms" }),
+    endedAt: integer("ended_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    index("analysis_sessions_status_idx").on(table.status),
+    index("analysis_sessions_created_at_idx").on(table.createdAt),
+  ],
+);
+
+export const transcriptSegments = sqliteTable(
+  "transcript_segments",
+  {
+    id: text("id").primaryKey(),
+    analysisSessionId: text("analysis_session_id")
+      .notNull()
+      .references(() => analysisSessions.id, { onDelete: "cascade" }),
+    providerSegmentId: text("provider_segment_id").notNull(),
+    sequence: integer("sequence").notNull(),
+    speakerRole: text("speaker_role", {
+      enum: transcriptSpeakerRoles,
+    }).notNull(),
+    text: text("text").notNull(),
+    startMs: integer("start_ms").notNull(),
+    endMs: integer("end_ms").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("transcript_segments_session_provider_uq").on(
+      table.analysisSessionId,
+      table.providerSegmentId,
+    ),
+    uniqueIndex("transcript_segments_session_sequence_uq").on(
+      table.analysisSessionId,
+      table.sequence,
+    ),
+    index("transcript_segments_session_order_idx").on(
+      table.analysisSessionId,
+      table.sequence,
+    ),
+  ],
+);
+
 export const schema = {
   interviewSessions,
   interviewQuestions,
@@ -182,4 +238,6 @@ export const schema = {
   interviewActions,
   realtimeAttempts,
   recordingAssets,
+  analysisSessions,
+  transcriptSegments,
 };

@@ -24,6 +24,7 @@ export const serverEnvSchema = z.object({
   OPENAI_TEXT_MODEL: optionalString,
   OPENAI_REALTIME_ENABLED: booleanString("false"),
   REALTIME_FAKE_ENABLED: booleanString("false"),
+  TRANSCRIPT_LAB_FAKE_ENABLED: booleanString("false"),
   OPENAI_REALTIME_MODEL: z.string().min(1).default("gpt-realtime-2.1"),
   OPENAI_REALTIME_VOICE: z.string().min(1).default("marin"),
   OPENAI_REALTIME_TRANSCRIPTION_MODEL: z

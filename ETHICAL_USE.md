@@ -7,3 +7,5 @@ Do not use it for unauthorized live-interview assistance, deception, hidden real
 The project intentionally omits hidden windows, capture avoidance, live answer generation, scoring claims, and real-interview integrations.
 
 Voice practice requires informed microphone-transfer consent. Optional recording requires a second, independent consent and must never be enabled secretly. Users are responsible for local recording-consent law, interview-platform terms, employer rules, and obtaining permission from every relevant participant. The application captures only its practice microphone and generated interviewer track; it does not capture system audio, calls, screens, or another application.
+
+Transcript Lab is limited to Practice / Authorized Demo and transcript-state research with synthetic Fake events. It must not be extended into covert live-interview capture, question detection for unauthorized assistance, resume evidence lookup during a real interview, or automatic answer generation.
