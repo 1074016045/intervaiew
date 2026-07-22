@@ -16,6 +16,7 @@ jobs:
       AI_MAX_RETRIES: 2
       OPENAI_REALTIME_ENABLED: "false"
       REALTIME_FAKE_ENABLED: "true"
+      TRANSCRIPT_LAB_FAKE_ENABLED: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

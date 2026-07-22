@@ -13,5 +13,7 @@
 - Agents SDK tracing, tools, handoffs, MCP, and history audio storage are disabled. Candidate speech is untrusted answer data and cannot alter the application state machine or canonical question sequence.
 - Recording upload validates ownership, role, MIME, byte limit, and relative paths; it uses random server filenames, atomic writes, restrictive permissions, and a storage-root containment check. Downloads select assets by database ID and use `nosniff`; playback supports validated byte ranges.
 - Logs must not contain ephemeral tokens, raw audio, transcripts, SDP, ICE credentials, provider raw events, or absolute recording paths. Authentication and quota failures are not automatically retried.
+- Transcript Lab mutation routes require same-origin requests, strict schemas, and `no-store` responses. Unknown chunk fields are rejected. Only final chunks reach the transactional SQLite adapter; provider IDs are idempotent and sequence reuse by a different provider ID is a stable conflict.
+- `TRANSCRIPT_LAB_FAKE_ENABLED` defaults off and is honored only outside production. URL parameters cannot enable it. The Fake adapter has no provider key, microphone, media, or external-network capability, and every timer/subscription is disposable.
 
 Report vulnerabilities privately to the repository owner. Do not include real credentials or sensitive candidate documents in a report.

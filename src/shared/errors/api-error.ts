@@ -4,6 +4,7 @@ import { AiError } from "@/features/ai/domain/ai-errors";
 import { InterviewDomainError } from "@/features/interviews/domain/interview-errors";
 import { safeLogger } from "@/infrastructure/logging/safe-logger";
 import { RealtimeError } from "@/features/realtime/domain/realtime-errors";
+import { QuestionIntelligenceError } from "@/features/question-intelligence/domain/question-intelligence-error";
 
 const aiStatuses: Record<string, number> = {
   AI_CONFIGURATION_ERROR: 500,
@@ -35,6 +36,15 @@ const realtimeStatuses: Record<string, number> = {
   UNSAFE_RECORDING_PATH: 400,
 };
 
+const questionIntelligenceStatuses: Record<string, number> = {
+  ANALYSIS_SESSION_NOT_FOUND: 404,
+  ANALYSIS_SESSION_STATE_INVALID: 409,
+  TRANSCRIPT_SEGMENT_INVALID: 400,
+  TRANSCRIPT_SEGMENT_NOT_FINAL: 400,
+  TRANSCRIPT_SEGMENT_DUPLICATE: 409,
+  TRANSCRIPT_SEGMENT_SEQUENCE_CONFLICT: 409,
+};
+
 export function apiErrorResponse(
   error: unknown,
   context: { route: string; sessionId?: string },
@@ -58,6 +68,10 @@ export function apiErrorResponse(
     code = error.code;
     message = error.message;
     status = realtimeStatuses[code] ?? 502;
+  } else if (error instanceof QuestionIntelligenceError) {
+    code = error.code;
+    message = error.message;
+    status = questionIntelligenceStatuses[code] ?? 400;
   }
   safeLogger.error("API request failed", {
     errorCode: code,

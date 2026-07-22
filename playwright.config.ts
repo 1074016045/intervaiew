@@ -20,6 +20,7 @@ export default defineConfig({
       AI_PROVIDER: "mock",
       DATABASE_PATH: join(e2eDirectory, "intervaiew.db"),
       REALTIME_FAKE_ENABLED: "true",
+      TRANSCRIPT_LAB_FAKE_ENABLED: "true",
       OPENAI_REALTIME_ENABLED: "false",
       RECORDINGS_ENABLED: "true",
       RECORDINGS_PATH: join(e2eDirectory, "recordings"),

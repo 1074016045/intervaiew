@@ -22,6 +22,7 @@ export default function RootLayout({
               <span className="practice-badge">Practice Mode</span>
               <Link href="/interviews/new">New practice</Link>
               <Link href="/history">History</Link>
+              <Link href="/lab/transcript">Transcript Lab</Link>
             </nav>
           </div>
         </header>

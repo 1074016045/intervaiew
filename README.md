@@ -4,7 +4,7 @@
 
 IntervAIew is a local-first, practice-only application for creating personalized fixed question plans and completing deterministic text or guided realtime voice mock interviews. It is not designed for hidden assistance in real interviews, monitoring evasion, recruitment tests, or unconsented recording.
 
-## v0.2 features
+## v0.3 features
 
 - Create practice sessions from a role, optional company, interview type, difficulty, language, resume text, and job description.
 - Generate 3–10 fixed questions with offline Mock, DeepSeek, or OpenAI text providers.
@@ -13,8 +13,13 @@ IntervAIew is a local-first, practice-only application for creating personalized
 - Optionally and separately consent to candidate/interviewer dual-track recording, with playback, download, per-asset deletion, and interview-level cleanup.
 - Mute, interrupt, repeat, clarify, end, and reconnect without letting the realtime model select questions or status.
 - Browse history, export TXT/JSON metadata, and cascade-delete data and recording files.
+- Open **Transcript Lab** for Practice / Authorized Demo streaming-state research using a deterministic Fake transcript source. No microphone or external AI is used.
+- Observe memory-only interim transcript updates, persist final segments transactionally in SQLite, and recover final segments after refresh.
+- Pause, resume, stop, reset local stream state, and safely retry duplicate final events without duplicate rows.
 
 This version does **not** include generated follow-ups, free-running interview agents, scoring, coaching, suggested answers, accounts, cloud storage, system-audio/screen capture, phone/SIP, analytics, or multi-agent orchestration.
+
+Transcript Lab also does **not** include question-boundary detection, question classification, resume evidence retrieval, answer generation, real microphone/system/tab capture, or a real OpenAI/DeepSeek streaming connection.
 
 ## Stack
 
@@ -32,6 +37,16 @@ pnpm dev
 ```
 
 Keep `AI_PROVIDER=mock`. Mock planning is deterministic, requires no key, and makes no external AI request. Text mode and automated Fake Realtime tests work without `OPENAI_API_KEY`.
+
+For Transcript Lab in local development, explicitly enable its non-production Fake adapter:
+
+```env
+TRANSCRIPT_LAB_FAKE_ENABLED=true
+```
+
+Run migrations, start the app, and open `http://localhost:3000/lab/transcript`. Creating a lab session does not start a stream. Page load never starts the Fake or writes transcript data. Interim chunks live only in the current page memory; only final chunks are accepted by the ingestion API and stored in SQLite. Refresh therefore restores final segments and clears interim text.
+
+Transcript Lab makes no OpenAI or DeepSeek request, requires no API key, and produces no AI API charge. Its automated coverage is included in `pnpm test` and `pnpm test:e2e`.
 
 ## Text planning providers
 
@@ -89,6 +104,14 @@ pnpm build
 
 Automated tests use Mock planning, Fake Realtime, Fake Recorder, isolated OS temporary storage, and fake HTTP responses. They never call a real AI provider or request a microphone.
 
+The Transcript Lab API uses these routes:
+
+- `POST /api/analysis-sessions` creates an explicit `transcript_lab` session.
+- `GET`, `PATCH`, and `DELETE /api/analysis-sessions/[id]` read, transition, or idempotently delete it.
+- `POST /api/analysis-sessions/[id]/transcript-segments` accepts final chunks only. A repeated provider segment ID returns the existing row with `duplicated=true`; a different provider ID reusing a sequence returns `TRANSCRIPT_SEGMENT_SEQUENCE_CONFLICT`.
+
+Mutation routes require a verified same origin, use strict request schemas, and return `no-store` responses.
+
 ## Architecture
 
 ```text
@@ -96,6 +119,7 @@ Question Planner → TextModelProvider → Mock | DeepSeek | OpenAI
 Stored canonical questions → VoiceInterviewService → InterviewController
 Browser UI → RealtimeInterviewClient → OpenAI WebRTC | explicit non-production Fake
 Browser media → separate candidate/interviewer recorders → safe local storage API
+FakeTranscriptStreamClient → TranscriptBuffer → TranscriptIngestionService → Analysis Repository → SQLite
 ```
 
 `TextModelProvider` remains separate from `RealtimeInterviewClient`. Domain/application code does not import the Agents SDK, WebRTC, MediaRecorder, or filesystem APIs. See [ARCHITECTURE.md](ARCHITECTURE.md).
