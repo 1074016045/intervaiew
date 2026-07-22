@@ -16,10 +16,12 @@ IntervAIew is a local-first, practice-only application for creating personalized
 - Open **Transcript Lab** for Practice / Authorized Demo streaming-state research using a deterministic Fake transcript source. No microphone or external AI is used.
 - Observe memory-only interim transcript updates, persist final segments transactionally in SQLite, and recover final segments after refresh.
 - Pause, resume, stop, reset local stream state, and safely retry duplicate final events without duplicate rows.
+- Build revisioned question candidates from persisted final interviewer segments and detect when a complete question boundary has formed.
+- Inspect deterministic signals and hybrid decisions, then manually Force Finalize, Merge with Previous, or Undo Finalize with idempotent actions.
 
 This version does **not** include generated follow-ups, free-running interview agents, scoring, coaching, suggested answers, accounts, cloud storage, system-audio/screen capture, phone/SIP, analytics, or multi-agent orchestration.
 
-Transcript Lab also does **not** include question-boundary detection, question classification, resume evidence retrieval, answer generation, real microphone/system/tab capture, or a real OpenAI/DeepSeek streaming connection.
+Transcript Lab includes Question Boundary Detector v0.3, but still does **not** include question classification, complete question understanding, resume evidence retrieval, answer generation, real microphone/system/tab capture, or a real OpenAI/DeepSeek streaming connection.
 
 ## Stack
 
@@ -42,11 +44,35 @@ For Transcript Lab in local development, explicitly enable its non-production Fa
 
 ```env
 TRANSCRIPT_LAB_FAKE_ENABLED=true
+QUESTION_BOUNDARY_FAKE_SEMANTIC_ENABLED=true
+QUESTION_BOUNDARY_SHORT_PAUSE_MS=500
+QUESTION_BOUNDARY_MEDIUM_PAUSE_MS=1400
+QUESTION_BOUNDARY_LONG_PAUSE_MS=3000
 ```
 
 Run migrations, start the app, and open `http://localhost:3000/lab/transcript`. Creating a lab session does not start a stream. Page load never starts the Fake or writes transcript data. Interim chunks live only in the current page memory; only final chunks are accepted by the ingestion API and stored in SQLite. Refresh therefore restores final segments and clears interim text.
 
 Transcript Lab makes no OpenAI or DeepSeek request, requires no API key, and produces no AI API charge. Its automated coverage is included in `pnpm test` and `pnpm test:e2e`.
+
+## Question Boundary Detector
+
+Question Boundary Detector decides only whether the persisted, ordered final interviewer transcript has formed a complete question. Candidate and unknown speaker segments are excluded. Interim text can remain visible in the Lab, but never becomes a finalized-question source.
+
+- **Deterministic** detection applies auditable Chinese/English question patterns, connector endings, punctuation, content validity, and pause duration without an AI request.
+- **Semantic** detection is a provider-neutral port used only for medium-pause gray zones. The bundled Fake Semantic provider is deterministic, can simulate delay/failure/stale responses in tests, and never accesses the network.
+- **Hybrid** detection runs deterministic rules first, skips semantic work for short pauses and high-confidence results, consults semantic only in the gray zone, and force-finalizes valid content after a long pause.
+
+Default pause behavior is: below 500 ms wait; 500–1399 ms deterministic only; 1400–2999 ms use semantic only for gray zones; 3000 ms or longer force-finalize valid content. Empty text, noise, punctuation-only text, and pure connectors are never long-pause questions. Thresholds are positive server-only integers and must satisfy short < medium < long.
+
+Every semantic request is revision-bound. A new final segment increments the candidate revision, aborts or supersedes stale work, and prevents the old result from being committed. A semantic result is cached for the same candidate revision. Manual Force Finalize, Merge with Previous, and Undo Finalize use required action IDs, transactional writes, source-segment mappings, and idempotent receipts.
+
+Run the public synthetic fixture evaluation with:
+
+```bash
+pnpm evaluate:boundary
+```
+
+It reports fixture count, accuracy, precision, recall, F1, false positives, and false negatives using deterministic rules plus Fake Semantic only. Known limitations: the rule vocabulary is intentionally bounded, speaker roles must already be assigned, pause timing is based on final-segment arrival, semantic normalization does not replace stored transcript text, and this stage does not classify, score, understand, retrieve evidence for, or answer a question.
 
 ## Text planning providers
 
@@ -98,6 +124,7 @@ pnpm db:migrate
 pnpm lint
 pnpm typecheck
 pnpm test
+pnpm evaluate:boundary
 pnpm test:e2e
 pnpm build
 ```
@@ -109,6 +136,8 @@ The Transcript Lab API uses these routes:
 - `POST /api/analysis-sessions` creates an explicit `transcript_lab` session.
 - `GET`, `PATCH`, and `DELETE /api/analysis-sessions/[id]` read, transition, or idempotently delete it.
 - `POST /api/analysis-sessions/[id]/transcript-segments` accepts final chunks only. A repeated provider segment ID returns the existing row with `duplicated=true`; a different provider ID reusing a sequence returns `TRANSCRIPT_SEGMENT_SEQUENCE_CONFLICT`.
+- `GET /api/analysis-sessions/[id]/question-boundary` returns the current candidate, deterministic signals, decision audit, and finalized questions.
+- `POST` routes below `question-boundary/evaluate`, `force-finalize`, `merge-previous`, and `undo` require strict bodies and an `actionId`.
 
 Mutation routes require a verified same origin, use strict request schemas, and return `no-store` responses.
 
@@ -120,6 +149,7 @@ Stored canonical questions → VoiceInterviewService → InterviewController
 Browser UI → RealtimeInterviewClient → OpenAI WebRTC | explicit non-production Fake
 Browser media → separate candidate/interviewer recorders → safe local storage API
 FakeTranscriptStreamClient → TranscriptBuffer → TranscriptIngestionService → Analysis Repository → SQLite
+Final Transcript Segments → QuestionCandidateBuilder → Deterministic/Hybrid Detector → QuestionSegmentationService → SQLite
 ```
 
 `TextModelProvider` remains separate from `RealtimeInterviewClient`. Domain/application code does not import the Agents SDK, WebRTC, MediaRecorder, or filesystem APIs. See [ARCHITECTURE.md](ARCHITECTURE.md).

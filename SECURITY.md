@@ -15,5 +15,9 @@
 - Logs must not contain ephemeral tokens, raw audio, transcripts, SDP, ICE credentials, provider raw events, or absolute recording paths. Authentication and quota failures are not automatically retried.
 - Transcript Lab mutation routes require same-origin requests, strict schemas, and `no-store` responses. Unknown chunk fields are rejected. Only final chunks reach the transactional SQLite adapter; provider IDs are idempotent and sequence reuse by a different provider ID is a stable conflict.
 - `TRANSCRIPT_LAB_FAKE_ENABLED` defaults off and is honored only outside production. URL parameters cannot enable it. The Fake adapter has no provider key, microphone, media, or external-network capability, and every timer/subscription is disposable.
+- Transcript text is untrusted data, never code or instructions. Only server-built candidates can be evaluated; clients cannot submit `shouldFinalize`, confidence, deterministic signals, semantic output, or provider selection.
+- Question-boundary mutation bodies are strict and same-origin. Required action IDs have a session-scoped unique receipt, and the repository returns the original result for a same-action retry without duplicating questions or mappings.
+- Semantic work is bound to candidate revision. New final segments increment revision; AbortController cancellation and a transactional current-revision check prevent stale results from overwriting current state.
+- `QUESTION_BOUNDARY_FAKE_SEMANTIC_ENABLED` defaults off, is ignored in production, has no URL backdoor, requires no API key, and performs no network access. Raw semantic payloads, hidden prompts, reasoning, SQL, stack traces, and transcript content are excluded from logs/errors.
 
 Report vulnerabilities privately to the repository owner. Do not include real credentials or sensitive candidate documents in a report.

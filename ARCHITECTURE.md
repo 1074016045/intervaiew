@@ -112,6 +112,30 @@ SQLite
 
 Only `TranscriptIngestionService` can send final chunks to the provider-neutral analysis repository. The SQLite adapter performs session lookup, state validation, provider-ID idempotency, sequence-conflict detection, insertion, and first-write activation in one transaction. `(analysis_session_id, provider_segment_id)` and `(analysis_session_id, sequence)` are unique. API responses expose safe segment views, never database exceptions or transcript log content.
 
-Transcript Lab does not reuse or rewrite Guided Realtime Voice. It does not use `RealtimeInterviewClient`, OpenAI WebRTC, microphone transfer, MediaRecorder, recording storage, the canonical interview question state machine, or existing interview transcripts. Conversely, v0.2 Voice does not write `analysis_sessions` or `transcript_segments`. Question-boundary detection and answer generation are outside v0.3.
+Transcript Lab does not reuse or rewrite Guided Realtime Voice. It does not use `RealtimeInterviewClient`, OpenAI WebRTC, microphone transfer, MediaRecorder, recording storage, the canonical interview question state machine, or existing interview transcripts. Conversely, v0.2 Voice does not write `analysis_sessions` or `transcript_segments`. Question-boundary detection extends the Lab without changing this ingestion path. Answer generation remains outside v0.3.
+
+## Question Boundary Detector v0.3
+
+```text
+Final Transcript Segments
+        ↓
+QuestionCandidateBuilder
+        ↓
+Deterministic Boundary Detector
+        ↓
+Hybrid Boundary Detector
+        ↓
+Semantic Provider Port (Fake in automated/non-production research)
+        ↓
+QuestionSegmentationService
+        ↓
+SQLite
+```
+
+The candidate builder reads persisted final segments in sequence order, selects only interviewer segments not assigned to an active finalized question, retains source IDs, and increments the stable active candidate revision when another segment arrives. Candidate/unknown roles do not enter automatic question candidates. Undo releases a question's segments; merge replaces the previous question's mapping with the ordered, deduplicated union.
+
+The deterministic detector is pure and provider-neutral. The hybrid detector partitions short, deterministic-only, medium gray-zone, and long-pause behavior. Semantic inputs contain only candidate text, language hint, deterministic signals, pause, and revision. Outputs pass strict Zod validation and exclude reasoning/raw payloads. An AbortController plus revision check supersedes stale responses, while same-revision semantic decisions are cached.
+
+`QuestionSegmentationService` coordinates evaluation and manual actions through a repository port. SQLite refreshes the candidate from transcript/finalized-question facts before committing a decision, then writes decision, finalized question, source mappings, and action receipt transactionally. `(analysis_session_id, action_id)` makes retries idempotent. Client routes can request an action but cannot submit `shouldFinalize`, confidence, or a provider decision.
 
 Stopped tracks upload only to the application server. `recording_assets` stores metadata and a relative path; bytes live beneath `RECORDINGS_PATH`, never in SQLite. Upload uses bounded size/MIME validation, random server names, an atomic temporary-file rename, restrictive permissions, and database/file compensation. Playback supports byte ranges. Interview deletion validates and removes recording files before foreign-key cascade removes metadata.
