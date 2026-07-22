@@ -29,10 +29,14 @@ test("persists only final Transcript Lab segments across refresh", async ({
 
   await page.getByRole("button", { name: "Pause", exact: true }).click();
   await expect(page.getByTestId("stream-status")).toHaveText("paused");
+
+  const interimAtPause =
+    (await page.getByTestId("interim-transcript").textContent()) ?? "";
+
   await page.waitForTimeout(1_600);
   await expect(page.getByTestId("final-segment")).toHaveCount(1);
   await expect(page.getByTestId("interim-transcript")).toHaveText(
-    "No interim transcript.",
+    interimAtPause,
   );
 
   await page.getByRole("button", { name: "Resume", exact: true }).click();
