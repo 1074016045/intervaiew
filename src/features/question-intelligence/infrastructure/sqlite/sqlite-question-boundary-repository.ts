@@ -24,6 +24,7 @@ import {
   finalizedQuestionSegments,
   finalizedQuestions,
   questionBoundaryActions,
+  questionUnderstandings,
   questionCandidateSegments,
   questionCandidates,
   schema,
@@ -222,6 +223,10 @@ export class SqliteQuestionBoundaryRepository implements QuestionBoundaryReposit
         })
         .where(eq(finalizedQuestions.id, previous.id))
         .run();
+      tx.update(questionUnderstandings)
+        .set({ status: "superseded", updatedAt: new Date(input.now) })
+        .where(eq(questionUnderstandings.finalizedQuestionId, previous.id))
+        .run();
       tx.delete(finalizedQuestionSegments)
         .where(eq(finalizedQuestionSegments.finalizedQuestionId, previous.id))
         .run();
@@ -237,6 +242,10 @@ export class SqliteQuestionBoundaryRepository implements QuestionBoundaryReposit
       tx.update(finalizedQuestions)
         .set({ undoneAt: new Date(input.now) })
         .where(eq(finalizedQuestions.id, target.id))
+        .run();
+      tx.update(questionUnderstandings)
+        .set({ status: "superseded", updatedAt: new Date(input.now) })
+        .where(eq(questionUnderstandings.finalizedQuestionId, target.id))
         .run();
       this.insertAction(tx, {
         analysisSessionId: input.analysisSessionId,
@@ -289,6 +298,10 @@ export class SqliteQuestionBoundaryRepository implements QuestionBoundaryReposit
       tx.update(finalizedQuestions)
         .set({ undoneAt: new Date(input.now) })
         .where(eq(finalizedQuestions.id, target.id))
+        .run();
+      tx.update(questionUnderstandings)
+        .set({ status: "superseded", updatedAt: new Date(input.now) })
+        .where(eq(questionUnderstandings.finalizedQuestionId, target.id))
         .run();
       this.insertAction(tx, {
         analysisSessionId: input.analysisSessionId,

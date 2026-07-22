@@ -19,6 +19,7 @@ import type {
 import { FakeTranscriptStreamClient } from "../infrastructure/fake/fake-transcript-stream-client";
 import { createTranscriptLabScenario } from "../infrastructure/fake/fake-transcript-scenarios";
 import type { QuestionBoundaryState } from "../application/question-segmentation-service";
+import type { UnderstandingSnapshot } from "../application/question-understanding-repository.port";
 
 const emptySnapshot: TranscriptBufferSnapshot = Object.freeze({
   finalizedText: "",
@@ -47,6 +48,8 @@ export function TranscriptLabPanel({
   const [busy, setBusy] = useState(false);
   const [boundaryBusy, setBoundaryBusy] = useState(false);
   const [boundary, setBoundary] = useState<QuestionBoundaryState | null>(null);
+  const [understanding, setUnderstanding] = useState<UnderstandingSnapshot | null>(null);
+  const [understandingBusyId, setUnderstandingBusyId] = useState<string | null>(null);
   const bufferRef = useRef(new TranscriptBuffer());
   const clientRef = useRef<TranscriptStreamClient | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
@@ -78,6 +81,14 @@ export function TranscriptLabPanel({
     [applyBoundary, id],
   );
 
+  const loadUnderstanding = useCallback(async (signal?: AbortSignal) => {
+    const response = await fetch(`/api/analysis-sessions/${id}/question-understanding`, { cache: "no-store", signal });
+    const payload = (await response.json()) as UnderstandingSnapshot & ApiErrorPayload;
+    if (!response.ok) throw new Error(payload.error?.message ?? "Question understanding could not be loaded.");
+    if (mountedRef.current) setUnderstanding(payload);
+    return payload;
+  }, [id]);
+
   const load = useCallback(
     async (signal?: AbortSignal) => {
       const response = await fetch(`/api/analysis-sessions/${id}`, {
@@ -99,7 +110,7 @@ export function TranscriptLabPanel({
   useEffect(() => {
     mountedRef.current = true;
     const controller = new AbortController();
-    Promise.all([load(controller.signal), loadBoundary(controller.signal)])
+    Promise.all([load(controller.signal), loadBoundary(controller.signal), loadUnderstanding(controller.signal)])
       .catch((caught) => {
         if (caught instanceof DOMException && caught.name === "AbortError")
           return;
@@ -122,7 +133,7 @@ export function TranscriptLabPanel({
       void clientRef.current?.dispose();
       clientRef.current = null;
     };
-  }, [load, loadBoundary]);
+  }, [load, loadBoundary, loadUnderstanding]);
 
   const disposeLocalClient = useCallback(async () => {
     unsubscribeRef.current?.();
@@ -235,6 +246,7 @@ export function TranscriptLabPanel({
             path === "undo")
         )
           applyBoundary(payload);
+        await loadUnderstanding();
       } catch (caught) {
         if (caught instanceof DOMException && caught.name === "AbortError")
           return;
@@ -250,8 +262,23 @@ export function TranscriptLabPanel({
         if (mountedRef.current) setBoundaryBusy(false);
       }
     },
-    [applyBoundary, boundaryBusy, id],
+    [applyBoundary, boundaryBusy, id, loadUnderstanding],
   );
+
+  const analyzeUnderstanding = useCallback(async (finalizedQuestionId: string) => {
+    if (understandingBusyId) return;
+    setUnderstandingBusyId(finalizedQuestionId); setError("");
+    try {
+      const response = await fetch(`/api/analysis-sessions/${id}/question-understanding/analyze`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, cache: "no-store",
+        body: JSON.stringify({ finalizedQuestionId, actionId: crypto.randomUUID() }),
+      });
+      const payload = (await response.json()) as UnderstandingSnapshot & ApiErrorPayload;
+      if (!response.ok) throw new Error(payload.error?.message ?? "Question analysis failed.");
+      if (mountedRef.current) setUnderstanding(payload);
+    } catch (caught) { if (mountedRef.current) setError(caught instanceof Error ? caught.message : "Question analysis failed."); }
+    finally { if (mountedRef.current) setUnderstandingBusyId(null); }
+  }, [id, understandingBusyId]);
 
   const handleStreamEvent = useCallback(
     (event: TranscriptStreamEvent) => {
@@ -733,6 +760,42 @@ export function TranscriptLabPanel({
         ) : (
           <p className="muted">No finalized questions yet.</p>
         )}
+      </section>
+
+      <section className="card stack" aria-labelledby="question-understanding-title">
+        <div>
+          <p className="question-number">Structured metadata only · no answers</p>
+          <h2 id="question-understanding-title">Question Understanding</h2>
+        </div>
+        {understanding?.questions.length ? (
+          <ol className="segment-timeline understanding-list">
+            {understanding.questions.map(({ question, understanding: result }, index) => (
+              <li key={question.id} data-testid="question-understanding">
+                <div className="message-head"><strong>Question {index + 1} · source revision {question.revision}</strong><span>{result?.status ?? "not analyzed"}</span></div>
+                <p>{question.text}</p>
+                {result ? (
+                  <div className="stack understanding-result">
+                    <dl className="metadata boundary-metadata">
+                      <div><dt>Language</dt><dd>{result.language}</dd></div>
+                      <div><dt>Family</dt><dd>{result.questionFamily}</dd></div>
+                      <div><dt>Answer mode</dt><dd>{result.expectedAnswerMode}</dd></div>
+                      <div><dt>Confidence</dt><dd>{result.confidence.toFixed(2)}</dd></div>
+                      <div><dt>Decided by</dt><dd>{result.decidedBy}</dd></div>
+                      <div><dt>Fake semantic used</dt><dd>{result.semanticProviderUsed ? "yes" : "no"}</dd></div>
+                      <div><dt>Understanding revision</dt><dd>{result.understandingRevision}</dd></div>
+                      <div><dt>Clarification</dt><dd>{result.requiresClarification ? "required" : "not required"}</dd></div>
+                    </dl>
+                    <p><strong>Requested dimensions:</strong> {result.requestedDimensions.join(", ") || "none"}</p>
+                    <p><strong>Constraints:</strong> {result.explicitConstraints.map((item) => `${item.kind}: ${item.sourceText}`).join("; ") || "none"}</p>
+                    <p><strong>Focus terms:</strong> {result.focusTerms.map((item) => item.normalized).join(", ") || "none"}</p>
+                    <p><strong>Clarification reasons:</strong> {result.clarificationReasons.join(", ")}</p>
+                  </div>
+                ) : <p className="muted">No understanding result. Analysis runs only after the explicit action below.</p>}
+                <div className="actions compact-actions"><button className="button secondary" type="button" disabled={Boolean(understandingBusyId)} onClick={() => void analyzeUnderstanding(question.id)}>{result ? "Re-analyze" : "Analyze"}</button></div>
+              </li>
+            ))}
+          </ol>
+        ) : <p className="muted">Finalize a question before analyzing it.</p>}
       </section>
 
       <div className="two-col">

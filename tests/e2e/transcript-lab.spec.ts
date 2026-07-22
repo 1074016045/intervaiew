@@ -158,3 +158,50 @@ test("detects, merges, undoes, and restores question boundaries", async ({
     page.getByRole("heading", { name: "Transcript Lab" }),
   ).toBeVisible();
 });
+
+test("explicitly analyzes a finalized question and restores understanding", async ({
+  page,
+}) => {
+  await page.goto("/lab/transcript");
+  await page.getByLabel("Session title").fill("E2E Question Understanding");
+  await page
+    .getByRole("button", { name: "Create Transcript Lab session" })
+    .click();
+  await expect(
+    page.getByRole("heading", {
+      name: "Question Understanding",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Finalize a question before analyzing it."),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Start Fake Stream" }).click();
+  await expect(page.getByTestId("final-segment")).toHaveCount(2);
+  await page.waitForTimeout(600);
+  await page.getByRole("button", { name: "Evaluate Boundary" }).click();
+  await expect(page.getByTestId("finalized-question")).toHaveCount(1);
+  const card = page.getByTestId("question-understanding");
+  await expect(card).toContainText("not analyzed");
+  await expect(card).toContainText("No understanding result");
+
+  await card.getByRole("button", { name: "Analyze", exact: true }).click();
+  await expect(card).toContainText("project_experience");
+  await expect(card).toContainText("completed");
+  await expect(card).toContainText("Fake semantic used");
+  await expect(card).not.toContainText("suggested answer");
+
+  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  await page.reload();
+  await expect(page.getByTestId("question-understanding")).toContainText(
+    "project_experience",
+  );
+  await expect(page.getByTestId("question-understanding")).toContainText(
+    "source revision 1",
+  );
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Delete Session" }).click();
+  await expect(page).toHaveURL(/\/lab\/transcript$/u);
+});

@@ -139,3 +139,23 @@ The deterministic detector is pure and provider-neutral. The hybrid detector par
 `QuestionSegmentationService` coordinates evaluation and manual actions through a repository port. SQLite refreshes the candidate from transcript/finalized-question facts before committing a decision, then writes decision, finalized question, source mappings, and action receipt transactionally. `(analysis_session_id, action_id)` makes retries idempotent. Client routes can request an action but cannot submit `shouldFinalize`, confidence, or a provider decision.
 
 Stopped tracks upload only to the application server. `recording_assets` stores metadata and a relative path; bytes live beneath `RECORDINGS_PATH`, never in SQLite. Upload uses bounded size/MIME validation, random server names, an atomic temporary-file rename, restrictive permissions, and database/file compensation. Playback supports byte ranges. Interview deletion validates and removes recording files before foreign-key cascade removes metadata.
+
+## Question Understanding v0.3
+
+```text
+Active Finalized Question + Revision + Boundary Decision
+                         ↓
+        DeterministicQuestionUnderstander (pure rules)
+                         ↓
+          HybridQuestionUnderstander (gray zones only)
+                         ↓
+   FakeQuestionUnderstandingProvider (explicit non-production only)
+                         ↓
+        QuestionUnderstandingService → repository port → SQLite
+```
+
+Domain schemas own the closed language, family, answer-mode, dimension, constraint, clarification, decision-source, and status taxonomies. Domain/application code imports no Next.js, SQLite, provider SDK, fetch, browser, filesystem, or environment module. Infrastructure owns Fake configuration and SQLite conversion. The UI and routes call the application service and never submit question wording or trusted classifications.
+
+Only active `finalized_questions` are inputs. The service performs semantic work outside the transaction, then the repository transaction re-reads question ownership, `undone_at`, revision, and boundary-decision provenance before committing. `(finalized_question_id, finalized_question_revision)` is unique. Same-revision analyses use the stored result; action receipts make retries idempotent. Merge and undo supersede affected results, while active GET excludes undone questions.
+
+The deterministic analyzer uses small named English/Chinese family, dimension, constraint, focus, and clarification rules. The hybrid layer bypasses semantic work for high-confidence results. Its only implementation is a deterministic network-free Fake that is impossible to enable in production; failure returns validated bounded deterministic metadata. No provider payload, prompt, hidden reasoning, summary, answer, resume evidence, or candidate evaluation is persisted.

@@ -18,10 +18,11 @@ IntervAIew is a local-first, practice-only application for creating personalized
 - Pause, resume, stop, reset local stream state, and safely retry duplicate final events without duplicate rows.
 - Build revisioned question candidates from persisted final interviewer segments and detect when a complete question boundary has formed.
 - Inspect deterministic signals and hybrid decisions, then manually Force Finalize, Merge with Previous, or Undo Finalize with idempotent actions.
+- Explicitly analyze active finalized questions into revision-bound language, family, answer-mode, requested-dimension, constraint, focus-term, clarification, confidence, and provenance metadata.
 
 This version does **not** include generated follow-ups, free-running interview agents, scoring, coaching, suggested answers, accounts, cloud storage, system-audio/screen capture, phone/SIP, analytics, or multi-agent orchestration.
 
-Transcript Lab includes Question Boundary Detector v0.3, but still does **not** include question classification, complete question understanding, resume evidence retrieval, answer generation, real microphone/system/tab capture, or a real OpenAI/DeepSeek streaming connection.
+Transcript Lab includes Question Boundary Detector and Question Understanding v0.3, but still does **not** include resume evidence retrieval, candidate-experience matching, scoring, answer generation, real microphone/system/tab capture, or a real OpenAI/DeepSeek streaming connection.
 
 ## Stack
 
@@ -45,6 +46,7 @@ For Transcript Lab in local development, explicitly enable its non-production Fa
 ```env
 TRANSCRIPT_LAB_FAKE_ENABLED=true
 QUESTION_BOUNDARY_FAKE_SEMANTIC_ENABLED=true
+QUESTION_UNDERSTANDING_FAKE_SEMANTIC_ENABLED=true
 QUESTION_BOUNDARY_SHORT_PAUSE_MS=500
 QUESTION_BOUNDARY_MEDIUM_PAUSE_MS=1400
 QUESTION_BOUNDARY_LONG_PAUSE_MS=3000
@@ -70,9 +72,24 @@ Run the public synthetic fixture evaluation with:
 
 ```bash
 pnpm evaluate:boundary
+pnpm evaluate:understanding
 ```
 
-It reports fixture count, accuracy, precision, recall, F1, false positives, and false negatives using deterministic rules plus Fake Semantic only. Known limitations: the rule vocabulary is intentionally bounded, speaker roles must already be assigned, pause timing is based on final-segment arrival, semantic normalization does not replace stored transcript text, and this stage does not classify, score, understand, retrieve evidence for, or answer a question.
+The boundary evaluator reports fixture count, accuracy, precision, recall, F1, false positives, and false negatives using deterministic rules plus Fake Semantic only. Known limitations: the rule vocabulary is intentionally bounded, speaker roles must already be assigned, pause timing is based on final-segment arrival, semantic normalization does not replace stored transcript text, and the boundary stage itself does not classify, score, retrieve evidence for, or answer a question.
+
+## Question Understanding
+
+Question Understanding consumes only active finalized questions persisted by Question Boundary Detector. It never reads interim transcript, unfinished candidates, candidate/unknown segments, or undone questions. Finalized wording remains immutable. Analysis is explicit—GET and page load do not trigger it—and returns structured metadata rather than an answer.
+
+The closed question-family taxonomy is `behavioral`, `project_experience`, `technical_concept`, `coding`, `quantitative`, `system_design`, `situational`, `motivation`, `role_fit`, `collaboration`, `leadership`, `clarification`, and `other`. Expected answer modes are `narrative`, `explanation`, `design`, `calculation`, `code`, `comparison`, `concise_fact`, and `mixed`. Requested dimensions, constraint kinds, clarification reasons, languages, decision sources, and statuses are also closed Zod enums.
+
+Requested dimensions are limited to `context`, `goal`, `challenge`, `responsibility`, `actions`, `reasoning`, `implementation`, `technical_details`, `assumptions`, `constraints`, `tradeoffs`, `alternatives`, `collaboration`, `leadership`, `conflict`, `failure`, `recovery`, `outcome`, `impact`, `metrics`, `lessons`, `complexity`, `edge_cases`, `testing`, `scalability`, `reliability`, `security`, and `clarification`. Constraint kinds are `time_limit`, `count`, `technology`, `role`, `scope`, `comparison`, `format`, and `other`; every stored constraint/focus item retains an exact bounded source substring and positive sequence.
+
+Auditable Chinese/English deterministic rules run first. High-confidence results bypass semantic work. Ambiguous and multi-question prompts may use the deterministic local Fake Semantic provider only when `NODE_ENV` is not `production` and the server-only flag is explicitly true. Production ignores the flag. Fake failure returns a bounded deterministic hybrid fallback; no raw payload, prompt, reasoning, or arbitrary summary is stored.
+
+Results bind finalized-question ID, finalized revision, and source boundary-decision ID. Same-revision retries use persistence, action IDs are session-idempotent, and commit transactionally re-reads the authoritative finalized question. Merge/revision and undo supersede old results; stale in-flight work cannot become active.
+
+Run `pnpm evaluate:understanding` for the public bilingual regression set. Its metrics measure only the fixed synthetic fixtures and are not evidence of real-world generalization. Known limitations include bounded keyword coverage, dependence on upstream speaker/boundary correctness, shallow focus-term normalization, and no real semantic provider.
 
 ## Text planning providers
 
@@ -125,6 +142,7 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm evaluate:boundary
+pnpm evaluate:understanding
 pnpm test:e2e
 pnpm build
 ```
@@ -138,6 +156,8 @@ The Transcript Lab API uses these routes:
 - `POST /api/analysis-sessions/[id]/transcript-segments` accepts final chunks only. A repeated provider segment ID returns the existing row with `duplicated=true`; a different provider ID reusing a sequence returns `TRANSCRIPT_SEGMENT_SEQUENCE_CONFLICT`.
 - `GET /api/analysis-sessions/[id]/question-boundary` returns the current candidate, deterministic signals, decision audit, and finalized questions.
 - `POST` routes below `question-boundary/evaluate`, `force-finalize`, `merge-previous`, and `undo` require strict bodies and an `actionId`.
+- `GET /api/analysis-sessions/[id]/question-understanding` returns active finalized questions with their current result, if any.
+- `POST /api/analysis-sessions/[id]/question-understanding/analyze` accepts only `finalizedQuestionId` and `actionId`; the server derives all source and classification data.
 
 Mutation routes require a verified same origin, use strict request schemas, and return `no-store` responses.
 
@@ -150,6 +170,7 @@ Browser UI → RealtimeInterviewClient → OpenAI WebRTC | explicit non-producti
 Browser media → separate candidate/interviewer recorders → safe local storage API
 FakeTranscriptStreamClient → TranscriptBuffer → TranscriptIngestionService → Analysis Repository → SQLite
 Final Transcript Segments → QuestionCandidateBuilder → Deterministic/Hybrid Detector → QuestionSegmentationService → SQLite
+Active Finalized Questions → Deterministic/Hybrid Understander → QuestionUnderstandingService → SQLite
 ```
 
 `TextModelProvider` remains separate from `RealtimeInterviewClient`. Domain/application code does not import the Agents SDK, WebRTC, MediaRecorder, or filesystem APIs. See [ARCHITECTURE.md](ARCHITECTURE.md).
