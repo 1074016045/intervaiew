@@ -1,5 +1,84 @@
 import { expect, test } from "@playwright/test";
 
+function syntheticWav() {
+  const bytes = Buffer.alloc(48);
+  bytes.write("RIFF", 0, "ascii");
+  bytes.writeUInt32LE(40, 4);
+  bytes.write("WAVEfmt ", 8, "ascii");
+  bytes.writeUInt32LE(16, 16);
+  bytes.writeUInt16LE(1, 20);
+  bytes.writeUInt16LE(1, 22);
+  bytes.writeUInt32LE(8_000, 24);
+  bytes.writeUInt32LE(16_000, 28);
+  bytes.writeUInt16LE(2, 32);
+  bytes.writeUInt16LE(16, 34);
+  bytes.write("data", 36, "ascii");
+  bytes.writeUInt32LE(4, 40);
+  return bytes;
+}
+
+test("explicitly uploads, transcribes, restores, and deletes uploaded audio", async ({
+  page,
+}) => {
+  await page.goto("/lab/transcript");
+  await page.getByLabel("Session title").fill("E2E Uploaded Audio");
+  await page
+    .getByRole("button", { name: "Create Transcript Lab session" })
+    .click();
+
+  await expect(
+    page.getByRole("heading", { name: "Uploaded Audio", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("v0.4 performs no speaker diarization"),
+  ).toBeVisible();
+  await page
+    .getByLabel("One speaker role for the whole file")
+    .selectOption("interviewer");
+  await page.getByLabel("Audio file").setInputFiles({
+    name: "synthetic.wav",
+    mimeType: "audio/wav",
+    buffer: syntheticWav(),
+  });
+  await page.getByRole("button", { name: "Upload audio" }).click();
+
+  await expect(page.getByTestId("uploaded-audio-asset")).toHaveCount(1);
+  await expect(page.getByTestId("uploaded-audio-status")).toHaveText(
+    "uploaded",
+  );
+  await expect(page.getByTestId("final-segment")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Transcribe", exact: true }).click();
+  await expect(page.getByTestId("uploaded-audio-status")).toHaveText(
+    "completed",
+  );
+  await expect(page.getByTestId("final-segment")).toHaveCount(2);
+  await expect(page.getByTestId("final-transcript")).toContainText(
+    "Tell me about a project you are proud of?",
+  );
+  await expect(page.getByTestId("question-candidate")).toContainText(
+    "What tradeoffs did you consider?",
+  );
+
+  await page.reload();
+  await expect(page.getByTestId("uploaded-audio-status")).toHaveText(
+    "completed",
+  );
+  await expect(page.getByTestId("final-segment")).toHaveCount(2);
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Delete uploaded audio" }).click();
+  await expect(page.getByTestId("uploaded-audio-asset")).toHaveCount(0);
+  await expect(page.getByTestId("final-segment")).toHaveCount(2);
+  await expect(page.getByTestId("final-transcript")).toContainText(
+    "Tell me about a project you are proud of?",
+  );
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Delete Session" }).click();
+  await expect(page).toHaveURL(/\/lab\/transcript$/u);
+});
+
 test("persists only final Transcript Lab segments across refresh", async ({
   page,
 }) => {

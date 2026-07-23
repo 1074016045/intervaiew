@@ -3,6 +3,7 @@ import { AnalysisSessionService } from "@/features/question-intelligence/applica
 import { SqliteAnalysisRepository } from "@/features/question-intelligence/infrastructure/sqlite/sqlite-analysis-repository";
 import { assertSameOrigin } from "@/infrastructure/http/same-origin";
 import { apiErrorResponse } from "@/shared/errors/api-error";
+import { createUploadedAudioService } from "@/features/uploaded-audio/infrastructure/uploaded-audio-service-factory";
 
 export const runtime = "nodejs";
 type Context = { params: Promise<{ id: string }> };
@@ -50,7 +51,9 @@ export async function DELETE(request: Request, context: Context) {
   const { id } = await context.params;
   try {
     assertSameOrigin(request);
-    const deleted = service().delete(id);
+    const deleted = await createUploadedAudioService({
+      ignoreEnabled: true,
+    }).deleteSession(id);
     return NextResponse.json({ deleted }, { headers: noStoreHeaders });
   } catch (error) {
     return safeError(error, id);

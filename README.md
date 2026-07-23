@@ -4,7 +4,7 @@
 
 IntervAIew is a local-first, practice-only application for creating personalized fixed question plans and completing deterministic text or guided realtime voice mock interviews. It is not designed for hidden assistance in real interviews, monitoring evasion, recruitment tests, or unconsented recording.
 
-## v0.3 features
+## v0.4 features
 
 - Create practice sessions from a role, optional company, interview type, difficulty, language, resume text, and job description.
 - Generate 3–10 fixed questions with offline Mock, DeepSeek, or OpenAI text providers.
@@ -19,10 +19,12 @@ IntervAIew is a local-first, practice-only application for creating personalized
 - Build revisioned question candidates from persisted final interviewer segments and detect when a complete question boundary has formed.
 - Inspect deterministic signals and hybrid decisions, then manually Force Finalize, Merge with Previous, or Undo Finalize with idempotent actions.
 - Explicitly analyze active finalized questions into revision-bound language, family, answer-mode, requested-dimension, constraint, focus-term, clarification, confidence, and provenance metadata.
+- Explicitly upload authorized prerecorded audio to an existing Transcript Lab session, declare one whole-file speaker role, and separately request deterministic Fake transcription into finalized Transcript Lab segments.
+- Restore uploaded-asset metadata and completed transcript state after refresh, safely retry failed transcription, and delete file bytes/metadata without silently deleting committed transcript segments.
 
 This version does **not** include generated follow-ups, free-running interview agents, scoring, coaching, suggested answers, accounts, cloud storage, system-audio/screen capture, phone/SIP, analytics, or multi-agent orchestration.
 
-Transcript Lab includes Question Boundary Detector and Question Understanding v0.3, but still does **not** include resume evidence retrieval, candidate-experience matching, scoring, answer generation, real microphone/system/tab capture, or a real OpenAI/DeepSeek streaming connection.
+Transcript Lab includes Question Boundary Detector, Question Understanding v0.3, and Uploaded Audio v0.4, but still does **not** include diarization, resume evidence retrieval, candidate-experience matching, scoring, answer generation, real microphone/system/tab capture, or a real OpenAI/DeepSeek streaming connection.
 
 ## Stack
 
@@ -47,6 +49,10 @@ For Transcript Lab in local development, explicitly enable its non-production Fa
 TRANSCRIPT_LAB_FAKE_ENABLED=true
 QUESTION_BOUNDARY_FAKE_SEMANTIC_ENABLED=true
 QUESTION_UNDERSTANDING_FAKE_SEMANTIC_ENABLED=true
+UPLOADED_AUDIO_ENABLED=true
+UPLOADED_AUDIO_FAKE_TRANSCRIPTION_ENABLED=true
+UPLOADED_AUDIO_MAX_BYTES=26214400
+UPLOADED_AUDIO_PATH=./data/uploaded-audio
 QUESTION_BOUNDARY_SHORT_PAUSE_MS=500
 QUESTION_BOUNDARY_MEDIUM_PAUSE_MS=1400
 QUESTION_BOUNDARY_LONG_PAUSE_MS=3000
@@ -55,6 +61,18 @@ QUESTION_BOUNDARY_LONG_PAUSE_MS=3000
 Run migrations, start the app, and open `http://localhost:3000/lab/transcript`. Creating a lab session does not start a stream. Page load never starts the Fake or writes transcript data. Interim chunks live only in the current page memory; only final chunks are accepted by the ingestion API and stored in SQLite. Refresh therefore restores final segments and clears interim text.
 
 Transcript Lab makes no OpenAI or DeepSeek request, requires no API key, and produces no AI API charge. Its automated coverage is included in `pnpm test` and `pnpm test:e2e`.
+
+## Uploaded Audio v0.4
+
+Uploaded Audio is limited to practice, authorized demonstrations, and research recordings the user is authorized to process. Select a WAV, MP3, M4A/MP4, OGG, WebM, or FLAC file, declare `interviewer` or `candidate` for the whole file, then choose **Upload audio**. Upload stores the validated bytes and safe metadata but does not transcribe. A separate visible **Transcribe** action is required.
+
+Uploaded Audio and its Fake transcription adapter both default to disabled. Enable them explicitly only for authorized development/test use. The multipart endpoint requires a valid `Content-Length` no larger than the file limit plus 64 KiB of multipart overhead; v0.4 intentionally rejects unknown-length/chunked uploads before parsing to avoid unbounded request buffering.
+
+v0.4 performs no speaker diarization: the declared role applies to every produced segment. Successful transcription produces finalized segments only through the existing Transcript Lab ingestion boundary. Interviewer segments therefore enter the existing Question Boundary and Question Understanding pipeline; candidate segments do not become automatic question candidates. GET/page load never transcribes.
+
+The bundled transcription provider is deterministic, network-free Fake behavior for automated tests and explicitly enabled non-production development. It cannot be enabled in production. No real uploaded-audio provider was added: although the installed OpenAI SDK is typed, production audio/provider policy and retention behavior require a separate rollout rather than an implicit model choice. Production transcription therefore remains disabled in v0.4.
+
+Deleting an uploaded asset uses a durable staged-delete plan so database and filesystem failures can be retried safely. Successful deletion removes metadata and stored bytes. Final transcript segments already committed remain in the analysis session; their nullable source link is cleared by the database foreign key. Delete the analysis session to remove those transcript segments. Upload, transcription, and deletion use session-scoped action receipts for idempotency.
 
 ## Question Boundary Detector
 
@@ -127,7 +145,7 @@ Resume and JD are not resent to Realtime. DeepSeek never receives voice audio. D
 
 ## Data and deletion
 
-The default database is `./data/intervaiew.db`; optional audio files are beneath `./data/recordings`. In local development these are on the local machine. On remote deployment they are on that server—“local” does not mean the user's device.
+The default database is `./data/intervaiew.db`; optional guided-voice recordings are beneath `./data/recordings`, and uploaded practice audio is beneath `./data/uploaded-audio`. In local development these are on the local machine. On remote deployment they are on that server—“local” does not mean the user's device.
 
 Candidate and interviewer audio tracks are stored separately and are never embedded in TXT/JSON export. Delete a recording from Detail, or delete an interview to remove associated files and metadata. Input transcription may not be word-for-word exact and is not used for scoring.
 
@@ -154,6 +172,9 @@ The Transcript Lab API uses these routes:
 - `POST /api/analysis-sessions` creates an explicit `transcript_lab` session.
 - `GET`, `PATCH`, and `DELETE /api/analysis-sessions/[id]` read, transition, or idempotently delete it.
 - `POST /api/analysis-sessions/[id]/transcript-segments` accepts final chunks only. A repeated provider segment ID returns the existing row with `duplicated=true`; a different provider ID reusing a sequence returns `TRANSCRIPT_SEGMENT_SEQUENCE_CONFLICT`.
+- `GET` and multipart `POST /api/analysis-sessions/[id]/uploaded-audio` list or explicitly upload an asset. Upload requires an action ID, one declared role, and one validated file.
+- `POST /api/analysis-sessions/[id]/uploaded-audio/[assetId]/transcribe` requires a strict `{actionId}` body and is the only route that requests transcription.
+- `DELETE /api/analysis-sessions/[id]/uploaded-audio/[assetId]` requires a strict `{actionId}` body and removes bytes/metadata while preserving committed transcript segments.
 - `GET /api/analysis-sessions/[id]/question-boundary` returns the current candidate, deterministic signals, decision audit, and finalized questions.
 - `POST` routes below `question-boundary/evaluate`, `force-finalize`, `merge-previous`, and `undo` require strict bodies and an `actionId`.
 - `GET /api/analysis-sessions/[id]/question-understanding` returns active finalized questions with their current result, if any.
@@ -169,6 +190,8 @@ Stored canonical questions → VoiceInterviewService → InterviewController
 Browser UI → RealtimeInterviewClient → OpenAI WebRTC | explicit non-production Fake
 Browser media → separate candidate/interviewer recorders → safe local storage API
 FakeTranscriptStreamClient → TranscriptBuffer → TranscriptIngestionService → Analysis Repository → SQLite
+Explicit audio upload → UploadedAudioService → safe filesystem + SQLite metadata
+Explicit Transcribe → AudioTranscriptionProvider (non-production Fake) → TranscriptIngestionService
 Final Transcript Segments → QuestionCandidateBuilder → Deterministic/Hybrid Detector → QuestionSegmentationService → SQLite
 Active Finalized Questions → Deterministic/Hybrid Understander → QuestionUnderstandingService → SQLite
 ```

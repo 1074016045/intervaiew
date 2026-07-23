@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   AnalysisRepositoryPort,
   IngestFinalResult,
+  IngestUploadedFinalsResult,
   UpdateAnalysisSessionResult,
 } from "@/features/question-intelligence/application/analysis-repository.port";
 import { TranscriptBuffer } from "@/features/question-intelligence/application/transcript-buffer";
@@ -59,6 +60,9 @@ class StubAnalysisRepository implements AnalysisRepositoryPort {
   ingestFinalChunk() {
     this.ingestCalls += 1;
     return this.result;
+  }
+  ingestUploadedFinals(): IngestUploadedFinalsResult {
+    return { kind: "asset-not-found" };
   }
 }
 

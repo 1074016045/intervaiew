@@ -19,6 +19,17 @@ export type UpdateAnalysisSessionResult =
   | Readonly<{ kind: "session-not-found" }>
   | Readonly<{ kind: "session-state-invalid" }>;
 
+export type IngestUploadedFinalsResult =
+  | Readonly<{
+      kind: "created" | "duplicate";
+      segments: ReadonlyArray<TranscriptSegmentView>;
+    }>
+  | Readonly<{ kind: "session-not-found" }>
+  | Readonly<{ kind: "session-state-invalid" }>
+  | Readonly<{ kind: "asset-not-found" }>
+  | Readonly<{ kind: "asset-state-invalid" }>
+  | Readonly<{ kind: "action-invalid" }>;
+
 export interface AnalysisRepositoryPort {
   createSession(input: {
     title: string;
@@ -34,4 +45,17 @@ export interface AnalysisRepositoryPort {
     sessionId: string,
     chunk: TranscriptChunk,
   ): IngestFinalResult;
+  ingestUploadedFinals(
+    input: Readonly<{
+      sessionId: string;
+      assetId: string;
+      actionId: string;
+      providerLabel: string;
+      speakerRole: "interviewer" | "candidate";
+      chunks: ReadonlyArray<
+        Readonly<{ text: string; startMs: number; endMs: number }>
+      >;
+      createdAt: number;
+    }>,
+  ): IngestUploadedFinalsResult;
 }
