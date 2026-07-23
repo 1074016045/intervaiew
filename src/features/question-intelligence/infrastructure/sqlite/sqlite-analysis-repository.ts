@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type {
   AnalysisRepositoryPort,
@@ -18,6 +18,8 @@ import {
   analysisSessions,
   schema,
   transcriptSegments,
+  uploadedAudioActions,
+  uploadedAudioAssets,
 } from "@/infrastructure/db/schema";
 
 type AnalysisDatabase = BetterSQLite3Database<typeof schema>;
@@ -38,6 +40,8 @@ export class SqliteAnalysisRepository implements AnalysisRepositoryPort {
     private readonly db: AnalysisDatabase = getDatabase().db,
     private readonly createId: () => string = () => crypto.randomUUID(),
     private readonly now: () => number = () => Date.now(),
+    private readonly beforeUploadedAssetCompletion: () => void = () =>
+      undefined,
   ) {}
 
   createSession(input: { title: string; mode: AnalysisSessionMode }) {
@@ -189,6 +193,7 @@ export class SqliteAnalysisRepository implements AnalysisRepositoryPort {
         text: chunk.text,
         startMs: chunk.startMs,
         endMs: chunk.endMs,
+        sourceUploadedAudioAssetId: null,
         createdAt: new Date(chunk.createdAt),
       };
       tx.insert(transcriptSegments).values(segment).run();
@@ -206,6 +211,171 @@ export class SqliteAnalysisRepository implements AnalysisRepositoryPort {
       return {
         kind: "created",
         segment: this.segmentView(segment),
+      } as const;
+    });
+  }
+
+  ingestUploadedFinals(
+    input: Parameters<AnalysisRepositoryPort["ingestUploadedFinals"]>[0],
+  ) {
+    return this.db.transaction((tx) => {
+      const session = tx
+        .select()
+        .from(analysisSessions)
+        .where(eq(analysisSessions.id, input.sessionId))
+        .get();
+      if (!session) return { kind: "session-not-found" } as const;
+      if (
+        session.status !== "draft" &&
+        session.status !== "active" &&
+        session.status !== "paused"
+      )
+        return { kind: "session-state-invalid" } as const;
+      const asset = tx
+        .select()
+        .from(uploadedAudioAssets)
+        .where(
+          and(
+            eq(uploadedAudioAssets.id, input.assetId),
+            eq(uploadedAudioAssets.analysisSessionId, input.sessionId),
+          ),
+        )
+        .get();
+      if (!asset) return { kind: "asset-not-found" } as const;
+      const action = tx
+        .select({
+          actionType: uploadedAudioActions.actionType,
+          assetId: uploadedAudioActions.assetId,
+        })
+        .from(uploadedAudioActions)
+        .where(
+          and(
+            eq(uploadedAudioActions.analysisSessionId, input.sessionId),
+            eq(uploadedAudioActions.actionId, input.actionId),
+          ),
+        )
+        .get();
+      if (
+        !action ||
+        action.actionType !== "transcribe" ||
+        action.assetId !== input.assetId
+      )
+        return { kind: "action-invalid" } as const;
+      const existing = tx
+        .select()
+        .from(transcriptSegments)
+        .where(
+          and(
+            eq(transcriptSegments.analysisSessionId, input.sessionId),
+            eq(transcriptSegments.sourceUploadedAudioAssetId, input.assetId),
+          ),
+        )
+        .orderBy(transcriptSegments.sequence)
+        .all();
+      const existingMatchesInput =
+        existing.length === input.chunks.length &&
+        existing.every((segment, index) => {
+          const chunk = input.chunks[index];
+          return (
+            segment.providerSegmentId ===
+              `uploaded:${input.assetId}:${index}` &&
+            segment.speakerRole === input.speakerRole &&
+            segment.text === chunk?.text &&
+            segment.startMs === chunk.startMs &&
+            segment.endMs === chunk.endMs
+          );
+        });
+      if (asset.status === "completed" && existingMatchesInput)
+        return {
+          kind: "duplicate",
+          segments: Object.freeze(
+            existing.map((segment) => this.segmentView(segment)),
+          ),
+        } as const;
+      if (asset.status !== "transcribing")
+        return { kind: "asset-state-invalid" } as const;
+      const completedAt = new Date(this.now());
+      if (existing.length) {
+        if (!existingMatchesInput)
+          return { kind: "asset-state-invalid" } as const;
+        if (session.status === "draft")
+          tx.update(analysisSessions)
+            .set({
+              status: "active",
+              startedAt: session.startedAt ?? completedAt,
+              updatedAt: completedAt,
+            })
+            .where(eq(analysisSessions.id, input.sessionId))
+            .run();
+        tx.update(uploadedAudioAssets)
+          .set({
+            status: "completed",
+            providerLabel: input.providerLabel,
+            transcriptSegmentCount: existing.length,
+            errorCode: null,
+            completedAt,
+            failedAt: null,
+            updatedAt: completedAt,
+          })
+          .where(eq(uploadedAudioAssets.id, input.assetId))
+          .run();
+        return {
+          kind: "duplicate",
+          segments: Object.freeze(
+            existing.map((segment) => this.segmentView(segment)),
+          ),
+        } as const;
+      }
+      const latest = tx
+        .select({ sequence: transcriptSegments.sequence })
+        .from(transcriptSegments)
+        .where(eq(transcriptSegments.analysisSessionId, input.sessionId))
+        .orderBy(desc(transcriptSegments.sequence))
+        .limit(1)
+        .get();
+      const firstSequence = (latest?.sequence ?? -1) + 1;
+      const segments = input.chunks.map((chunk, index) => ({
+        id: this.createId(),
+        analysisSessionId: input.sessionId,
+        providerSegmentId: `uploaded:${input.assetId}:${index}`,
+        sequence: firstSequence + index,
+        speakerRole: input.speakerRole,
+        text: chunk.text,
+        startMs: chunk.startMs,
+        endMs: chunk.endMs,
+        sourceUploadedAudioAssetId: input.assetId,
+        createdAt: new Date(input.createdAt + index),
+      }));
+      tx.insert(transcriptSegments).values(segments).run();
+      this.beforeUploadedAssetCompletion();
+      if (session.status === "draft") {
+        const now = new Date(this.now());
+        tx.update(analysisSessions)
+          .set({
+            status: "active",
+            startedAt: session.startedAt ?? now,
+            updatedAt: now,
+          })
+          .where(eq(analysisSessions.id, input.sessionId))
+          .run();
+      }
+      tx.update(uploadedAudioAssets)
+        .set({
+          status: "completed",
+          providerLabel: input.providerLabel,
+          transcriptSegmentCount: segments.length,
+          errorCode: null,
+          completedAt,
+          failedAt: null,
+          updatedAt: completedAt,
+        })
+        .where(eq(uploadedAudioAssets.id, input.assetId))
+        .run();
+      return {
+        kind: "created",
+        segments: Object.freeze(
+          segments.map((segment) => this.segmentView(segment)),
+        ),
       } as const;
     });
   }

@@ -32,6 +32,15 @@ export const serverEnvSchema = z
     TRANSCRIPT_LAB_FAKE_ENABLED: booleanString("false"),
     QUESTION_BOUNDARY_FAKE_SEMANTIC_ENABLED: booleanString("false"),
     QUESTION_UNDERSTANDING_FAKE_SEMANTIC_ENABLED: booleanString("false"),
+    UPLOADED_AUDIO_ENABLED: booleanString("false"),
+    UPLOADED_AUDIO_FAKE_TRANSCRIPTION_ENABLED: booleanString("false"),
+    UPLOADED_AUDIO_MAX_BYTES: z.coerce
+      .number()
+      .int()
+      .min(1024)
+      .max(262_144_000)
+      .default(26_214_400),
+    UPLOADED_AUDIO_PATH: z.string().min(1).default("./data/uploaded-audio"),
     QUESTION_BOUNDARY_SHORT_PAUSE_MS: z.coerce
       .number()
       .int()

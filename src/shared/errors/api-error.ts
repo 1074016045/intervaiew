@@ -5,6 +5,7 @@ import { InterviewDomainError } from "@/features/interviews/domain/interview-err
 import { safeLogger } from "@/infrastructure/logging/safe-logger";
 import { RealtimeError } from "@/features/realtime/domain/realtime-errors";
 import { QuestionIntelligenceError } from "@/features/question-intelligence/domain/question-intelligence-error";
+import { UploadedAudioError } from "@/features/uploaded-audio/domain/uploaded-audio-error";
 
 const aiStatuses: Record<string, number> = {
   AI_CONFIGURATION_ERROR: 500,
@@ -61,6 +62,25 @@ const questionIntelligenceStatuses: Record<string, number> = {
   QUESTION_UNDERSTANDING_ACTION_DUPLICATE: 409,
 };
 
+const uploadedAudioStatuses: Record<string, number> = {
+  UPLOADED_AUDIO_DISABLED: 503,
+  UPLOADED_AUDIO_FILE_REQUIRED: 400,
+  UPLOADED_AUDIO_TYPE_UNSUPPORTED: 415,
+  UPLOADED_AUDIO_CONTENT_INVALID: 415,
+  UPLOADED_AUDIO_SIZE_INVALID: 413,
+  UPLOADED_AUDIO_NOT_FOUND: 404,
+  UPLOADED_AUDIO_SESSION_NOT_FOUND: 404,
+  UPLOADED_AUDIO_SESSION_INVALID: 409,
+  UPLOADED_AUDIO_ACTION_DUPLICATE: 409,
+  UPLOADED_AUDIO_TRANSCRIPTION_BUSY: 409,
+  UPLOADED_AUDIO_TRANSCRIPTION_FAILED: 502,
+  UPLOADED_AUDIO_DELETION_BUSY: 409,
+  UPLOADED_AUDIO_DELETION_INCOMPLETE: 500,
+  UPLOADED_AUDIO_PROVIDER_DISABLED: 503,
+  UPLOADED_AUDIO_PATH_UNSAFE: 400,
+  UPLOADED_AUDIO_STORAGE_FAILED: 500,
+};
+
 export function apiErrorResponse(
   error: unknown,
   context: { route: string; sessionId?: string },
@@ -88,6 +108,10 @@ export function apiErrorResponse(
     code = error.code;
     message = error.message;
     status = questionIntelligenceStatuses[code] ?? 400;
+  } else if (error instanceof UploadedAudioError) {
+    code = error.code;
+    message = error.message;
+    status = uploadedAudioStatuses[code] ?? 400;
   }
   safeLogger.error("API request failed", {
     errorCode: code,

@@ -42,6 +42,13 @@ import {
   understandingLanguages,
   understandingStatuses,
 } from "@/features/question-intelligence/domain/question-understanding";
+import {
+  uploadedAudioActionTypes,
+  uploadedAudioDeletionScopes,
+  uploadedAudioDeletionStatuses,
+  uploadedAudioSpeakerRoles,
+  uploadedAudioStatuses,
+} from "@/features/uploaded-audio/domain/uploaded-audio";
 
 export const interviewSessions = sqliteTable(
   "interview_sessions",
@@ -217,6 +224,175 @@ export const analysisSessions = sqliteTable(
   ],
 );
 
+export const uploadedAudioAssets = sqliteTable(
+  "uploaded_audio_assets",
+  {
+    id: text("id").primaryKey(),
+    analysisSessionId: text("analysis_session_id")
+      .notNull()
+      .references(() => analysisSessions.id, { onDelete: "cascade" }),
+    speakerRole: text("speaker_role", {
+      enum: uploadedAudioSpeakerRoles,
+    }).notNull(),
+    originalFilename: text("original_filename").notNull(),
+    mimeType: text("mime_type").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    sha256: text("sha256").notNull(),
+    relativePath: text("relative_path").notNull(),
+    status: text("status", { enum: uploadedAudioStatuses }).notNull(),
+    providerLabel: text("provider_label"),
+    transcriptSegmentCount: integer("transcript_segment_count")
+      .notNull()
+      .default(0),
+    errorCode: text("error_code"),
+    completedAt: integer("completed_at", { mode: "timestamp_ms" }),
+    failedAt: integer("failed_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    index("uploaded_audio_assets_session_created_idx").on(
+      table.analysisSessionId,
+      table.createdAt,
+    ),
+    uniqueIndex("uploaded_audio_assets_relative_path_uq").on(
+      table.relativePath,
+    ),
+    check("uploaded_audio_assets_byte_size_ck", sql`${table.byteSize} > 0`),
+    check(
+      "uploaded_audio_assets_speaker_role_ck",
+      sql`${table.speakerRole} in ('interviewer', 'candidate')`,
+    ),
+    check(
+      "uploaded_audio_assets_status_ck",
+      sql`${table.status} in ('uploaded', 'transcribing', 'completed', 'failed', 'deleting')`,
+    ),
+    check(
+      "uploaded_audio_assets_segment_count_ck",
+      sql`${table.transcriptSegmentCount} >= 0`,
+    ),
+  ],
+);
+
+export const uploadedAudioActions = sqliteTable(
+  "uploaded_audio_actions",
+  {
+    id: text("id").primaryKey(),
+    analysisSessionId: text("analysis_session_id")
+      .notNull()
+      .references(() => analysisSessions.id, { onDelete: "cascade" }),
+    actionId: text("action_id").notNull(),
+    actionType: text("action_type", {
+      enum: uploadedAudioActionTypes,
+    }).notNull(),
+    assetId: text("asset_id").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("uploaded_audio_actions_session_action_uq").on(
+      table.analysisSessionId,
+      table.actionId,
+    ),
+    index("uploaded_audio_actions_session_asset_idx").on(
+      table.analysisSessionId,
+      table.assetId,
+    ),
+    check(
+      "uploaded_audio_actions_type_ck",
+      sql`${table.actionType} in ('upload', 'transcribe', 'delete')`,
+    ),
+  ],
+);
+
+export const uploadedAudioDeletionBatches = sqliteTable(
+  "uploaded_audio_deletion_batches",
+  {
+    id: text("id").primaryKey(),
+    analysisSessionId: text("analysis_session_id").notNull(),
+    actionId: text("action_id").notNull(),
+    scope: text("scope", { enum: uploadedAudioDeletionScopes }).notNull(),
+    targetAssetId: text("target_asset_id"),
+    status: text("status", {
+      enum: uploadedAudioDeletionStatuses,
+    }).notNull(),
+    errorCode: text("error_code"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+    completedAt: integer("completed_at", { mode: "timestamp_ms" }),
+  },
+  (table) => [
+    uniqueIndex("uploaded_audio_deletion_batches_session_action_uq").on(
+      table.analysisSessionId,
+      table.actionId,
+    ),
+    index("uploaded_audio_deletion_batches_session_status_idx").on(
+      table.analysisSessionId,
+      table.status,
+    ),
+    check(
+      "uploaded_audio_deletion_batches_scope_ck",
+      sql`${table.scope} in ('asset', 'session')`,
+    ),
+    check(
+      "uploaded_audio_deletion_batches_status_ck",
+      sql`${table.status} in ('planned', 'metadata_deleted', 'completed')`,
+    ),
+    check(
+      "uploaded_audio_deletion_batches_target_ck",
+      sql`(${table.scope} = 'asset' and ${table.targetAssetId} is not null) or (${table.scope} = 'session' and ${table.targetAssetId} is null)`,
+    ),
+    check(
+      "uploaded_audio_deletion_batches_error_ck",
+      sql`${table.errorCode} is null or length(${table.errorCode}) <= 80`,
+    ),
+    check(
+      "uploaded_audio_deletion_batches_completed_ck",
+      sql`(${table.status} = 'completed' and ${table.completedAt} is not null) or (${table.status} <> 'completed' and ${table.completedAt} is null)`,
+    ),
+  ],
+);
+
+export const uploadedAudioDeletionFiles = sqliteTable(
+  "uploaded_audio_deletion_files",
+  {
+    id: text("id").primaryKey(),
+    batchId: text("batch_id")
+      .notNull()
+      .references(() => uploadedAudioDeletionBatches.id, {
+        onDelete: "cascade",
+      }),
+    assetId: text("asset_id").notNull(),
+    originalRelativePath: text("original_relative_path").notNull(),
+    tombstoneRelativePath: text("tombstone_relative_path").notNull(),
+    status: text("status", {
+      enum: uploadedAudioDeletionStatuses,
+    }).notNull(),
+    errorCode: text("error_code"),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("uploaded_audio_deletion_files_batch_asset_uq").on(
+      table.batchId,
+      table.assetId,
+    ),
+    uniqueIndex("uploaded_audio_deletion_files_tombstone_uq").on(
+      table.tombstoneRelativePath,
+    ),
+    check(
+      "uploaded_audio_deletion_files_status_ck",
+      sql`${table.status} in ('planned', 'metadata_deleted', 'completed')`,
+    ),
+    check(
+      "uploaded_audio_deletion_files_paths_ck",
+      sql`length(${table.originalRelativePath}) between 1 and 255 and length(${table.tombstoneRelativePath}) between 1 and 255 and ${table.originalRelativePath} <> ${table.tombstoneRelativePath}`,
+    ),
+    check(
+      "uploaded_audio_deletion_files_error_ck",
+      sql`${table.errorCode} is null or length(${table.errorCode}) <= 80`,
+    ),
+  ],
+);
+
 export const transcriptSegments = sqliteTable(
   "transcript_segments",
   {
@@ -232,6 +408,9 @@ export const transcriptSegments = sqliteTable(
     text: text("text").notNull(),
     startMs: integer("start_ms").notNull(),
     endMs: integer("end_ms").notNull(),
+    sourceUploadedAudioAssetId: text(
+      "source_uploaded_audio_asset_id",
+    ).references(() => uploadedAudioAssets.id, { onDelete: "set null" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   },
   (table) => [
@@ -246,6 +425,9 @@ export const transcriptSegments = sqliteTable(
     index("transcript_segments_session_order_idx").on(
       table.analysisSessionId,
       table.sequence,
+    ),
+    index("transcript_segments_uploaded_audio_asset_idx").on(
+      table.sourceUploadedAudioAssetId,
     ),
   ],
 );

@@ -20,6 +20,7 @@ import { FakeTranscriptStreamClient } from "../infrastructure/fake/fake-transcri
 import { createTranscriptLabScenario } from "../infrastructure/fake/fake-transcript-scenarios";
 import type { QuestionBoundaryState } from "../application/question-segmentation-service";
 import type { UnderstandingSnapshot } from "../application/question-understanding-repository.port";
+import { UploadedAudioPanel } from "@/features/uploaded-audio/components/uploaded-audio-panel";
 
 const emptySnapshot: TranscriptBufferSnapshot = Object.freeze({
   finalizedText: "",
@@ -584,6 +585,13 @@ export function TranscriptLabPanel({
           </button>
         </div>
       </section>
+
+      <UploadedAudioPanel
+        sessionId={id}
+        onTranscriptCommitted={async () => {
+          await Promise.all([load(), loadBoundary(), loadUnderstanding()]);
+        }}
+      />
 
       <section className="card stack" aria-labelledby="question-boundary-title">
         <div>

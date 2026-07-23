@@ -30,6 +30,14 @@ Question Understanding is complete as an isolated metadata stage over active fin
 
 Interim chunks remain memory-only. Final chunks persist with provider-ID and sequence uniqueness. Both Fake Semantic implementations are deterministic and network-free. This phase does not implement real audio capture, resume evidence retrieval, experience matching, scoring, suggested answers, or answer generation.
 
+## v0.4 (complete): Uploaded Audio
+
+Implemented: explicit practice/authorized-demo upload to an existing Transcript Lab session; one required whole-file `interviewer` or `candidate` role; strict pre-parse request-length plus MIME, extension, signature, empty/size, filename, path, and ownership validation; random server storage names; atomic restrictive filesystem writes outside SQLite; bounded metadata and content hashes; upload/transcribe/delete action receipts; durable retryable staged deletion; and explicit transcription with one atomic finalized-segment/asset-completion transaction through the existing ingestion pipeline.
+
+The deterministic Fake transcription provider is network-free, testable for interviewer/candidate success and controlled failure, and impossible to enable in production. Page load and GET never transcribe. Deleting an asset removes bytes and metadata but retains committed transcript segments, as disclosed in the UI and privacy documentation.
+
+v0.4 does not implement live microphone capture, system/tab audio interception, covert capture, speaker diarization, real production transcription, scoring, resume evidence retrieval, suggested/generated answers, automatic speaking, or hidden real-time assistance.
+
 ## Later candidates
 
 Accessibility audits, database backup/import, configurable retention, provider observability without content logging, and additional deterministic practice formats.
