@@ -1,18 +1,15 @@
-import { ZodError } from "zod";
-import { TranscriptIngestionService } from "@/features/question-intelligence/application/transcript-ingestion-service";
 import {
   extensionOf,
   isSupportedAudioType,
   isValidAudioSignature,
   normalizeDisplayFilename,
-  transcriptionChunkSchema,
   type UploadedAudioAssetView,
   type UploadedAudioStoredAsset,
   uploadedAudioActionSchema,
   uploadAudioMetadataSchema,
 } from "../domain/uploaded-audio";
 import { UploadedAudioError } from "../domain/uploaded-audio-error";
-import type { AudioTranscriptionProvider } from "./audio-transcription-provider.port";
+import type { TranscriptionJobQueuePort } from "./transcription-job-queue.port";
 import type { UploadedAudioRepositoryPort } from "./uploaded-audio-repository.port";
 import type { UploadedAudioStoragePort } from "./uploaded-audio-storage.port";
 
@@ -29,9 +26,9 @@ export class UploadedAudioService {
   constructor(
     private readonly repository: UploadedAudioRepositoryPort,
     private readonly storage: UploadedAudioStoragePort,
-    private readonly provider: AudioTranscriptionProvider,
-    private readonly ingestion: TranscriptIngestionService,
+    private readonly jobQueue: TranscriptionJobQueuePort,
     private readonly maximumBytes: number,
+    private readonly workerAvailable = true,
     private readonly createId: () => string = () => crypto.randomUUID(),
     private readonly now: () => number = () => Date.now(),
   ) {}
@@ -121,108 +118,83 @@ export class UploadedAudioService {
 
   async transcribe(sessionId: string, assetId: string, input: unknown) {
     const { actionId } = uploadedAudioActionSchema.parse(input);
-    const beginning = this.repository.beginTranscription(
-      sessionId,
-      assetId,
-      actionId,
-    );
-    if (beginning.kind === "asset-not-found")
+    if (!this.workerAvailable)
+      throw new UploadedAudioError(
+        "UPLOADED_AUDIO_WORKER_UNAVAILABLE",
+        "Uploaded-audio transcription processing is unavailable on this server.",
+      );
+    let result;
+    try {
+      result = this.jobQueue.enqueue({
+        id: this.createId(),
+        analysisSessionId: sessionId,
+        assetId,
+        actionId,
+        maximumAttempts: 3,
+        now: this.now(),
+      });
+    } catch {
+      throw new UploadedAudioError(
+        "UPLOADED_AUDIO_TRANSCRIPTION_FAILED",
+        "The transcription job could not be queued safely.",
+      );
+    }
+    if (result.kind === "asset-not-found")
       throw new UploadedAudioError(
         "UPLOADED_AUDIO_NOT_FOUND",
         "The uploaded audio asset could not be found.",
       );
-    if (beginning.kind === "session-not-found")
+    if (result.kind === "session-not-found")
       throw new UploadedAudioError(
         "UPLOADED_AUDIO_SESSION_NOT_FOUND",
         "The analysis session could not be found.",
       );
-    if (beginning.kind === "session-invalid")
+    if (result.kind === "session-invalid")
       throw new UploadedAudioError(
         "UPLOADED_AUDIO_SESSION_INVALID",
         "The analysis session does not accept transcription.",
       );
-    if (beginning.kind === "action-conflict")
+    if (result.kind === "action-conflict")
       throw new UploadedAudioError(
         "UPLOADED_AUDIO_ACTION_DUPLICATE",
         "That action ID is already used by another uploaded-audio action.",
       );
-    if (beginning.kind === "busy")
-      throw new UploadedAudioError(
-        "UPLOADED_AUDIO_TRANSCRIPTION_BUSY",
-        "This audio asset is already being transcribed or deleted.",
-      );
-    if (beginning.kind === "duplicate" && beginning.asset.status === "failed")
-      throw new UploadedAudioError(
-        "UPLOADED_AUDIO_TRANSCRIPTION_FAILED",
-        "This transcription action already failed safely. Retry with a new action ID.",
-      );
     if (
-      beginning.kind === "duplicate" &&
-      beginning.asset.status === "transcribing"
+      result.kind === "active-job-conflict" ||
+      result.kind === "temporarily-unavailable"
     )
       throw new UploadedAudioError(
         "UPLOADED_AUDIO_TRANSCRIPTION_BUSY",
-        "This audio asset is already being transcribed.",
+        "This audio asset already has queued or running transcription work.",
       );
-    if (beginning.kind === "duplicate" || beginning.kind === "completed")
-      return { asset: publicAsset(beginning.asset), duplicated: true } as const;
-
-    try {
-      const bytes = await this.storage.read(beginning.asset.relativePath);
-      const chunks = (
-        await this.provider.transcribe({
-          assetId,
-          speakerRole: beginning.asset.speakerRole,
-          mimeType: beginning.asset.mimeType,
-          bytes,
-        })
-      ).map((chunk) => transcriptionChunkSchema.parse(chunk));
-      if (!chunks.length || chunks.length > 50)
-        throw new UploadedAudioError(
-          "UPLOADED_AUDIO_TRANSCRIPTION_FAILED",
-          "The transcription provider returned no usable final segments.",
-        );
-      const ingested = this.ingestion.ingestUploadedAudio(sessionId, {
-        assetId,
-        actionId,
-        providerLabel: this.provider.label,
-        speakerRole: beginning.asset.speakerRole,
-        chunks,
-        createdAt: this.now(),
-      });
-      const asset = this.repository.get(sessionId, assetId);
-      if (!asset || asset.status !== "completed")
-        throw new UploadedAudioError(
-          "UPLOADED_AUDIO_TRANSCRIPTION_FAILED",
-          "The completed transcription state could not be restored.",
-        );
-      return {
-        asset: publicAsset(asset),
-        duplicated: ingested.kind === "duplicate",
-      } as const;
-    } catch (error) {
-      const errorCode =
-        error instanceof UploadedAudioError
-          ? error.code
-          : "UPLOADED_AUDIO_TRANSCRIPTION_FAILED";
-      this.repository.failTranscription({
-        sessionId,
-        assetId,
-        actionId,
-        providerLabel: this.provider.label,
-        errorCode,
-      });
-      if (error instanceof UploadedAudioError) throw error;
-      if (error instanceof ZodError)
-        throw new UploadedAudioError(
-          "UPLOADED_AUDIO_TRANSCRIPTION_FAILED",
-          "The transcription provider returned invalid final segments.",
-        );
+    if (result.kind === "legacy-action")
+      throw new UploadedAudioError(
+        "UPLOADED_AUDIO_TRANSCRIPTION_LEGACY_ACTION",
+        "That legacy transcription action has no job. Retry with a new action ID.",
+      );
+    if (result.kind === "asset-completed")
+      throw new UploadedAudioError(
+        "UPLOADED_AUDIO_TRANSCRIPTION_BUSY",
+        "Completed audio cannot be transcribed again.",
+      );
+    if (result.kind === "asset-deleting" || result.kind === "session-deleting")
+      throw new UploadedAudioError(
+        "UPLOADED_AUDIO_DELETION_BUSY",
+        "Uploaded audio cannot be transcribed while deletion is in progress.",
+      );
+    if (result.kind !== "created" && result.kind !== "duplicate")
       throw new UploadedAudioError(
         "UPLOADED_AUDIO_TRANSCRIPTION_FAILED",
-        "Audio transcription failed safely. You can retry with a new action.",
+        "The transcription job could not be queued safely.",
       );
-    }
+    return {
+      job: result.job,
+      duplicated: result.kind === "duplicate",
+      terminal:
+        result.job.status === "completed" ||
+        result.job.status === "failed" ||
+        result.job.status === "cancelled",
+    } as const;
   }
 
   async delete(sessionId: string, assetId: string, input: unknown) {

@@ -1,5 +1,6 @@
 import {
   check,
+  foreignKey,
   index,
   integer,
   sqliteTable,
@@ -48,6 +49,7 @@ import {
   uploadedAudioDeletionStatuses,
   uploadedAudioSpeakerRoles,
   uploadedAudioStatuses,
+  transcriptionJobStatuses,
 } from "@/features/uploaded-audio/domain/uploaded-audio";
 
 export const interviewSessions = sqliteTable(
@@ -293,6 +295,11 @@ export const uploadedAudioActions = sqliteTable(
       table.analysisSessionId,
       table.actionId,
     ),
+    uniqueIndex("uploaded_audio_actions_session_action_asset_uq").on(
+      table.analysisSessionId,
+      table.actionId,
+      table.assetId,
+    ),
     index("uploaded_audio_actions_session_asset_idx").on(
       table.analysisSessionId,
       table.assetId,
@@ -300,6 +307,114 @@ export const uploadedAudioActions = sqliteTable(
     check(
       "uploaded_audio_actions_type_ck",
       sql`${table.actionType} in ('upload', 'transcribe', 'delete')`,
+    ),
+  ],
+);
+
+export const uploadedAudioTranscriptionJobs = sqliteTable(
+  "uploaded_audio_transcription_jobs",
+  {
+    id: text("id").primaryKey(),
+    analysisSessionId: text("analysis_session_id")
+      .notNull()
+      .references(() => analysisSessions.id, { onDelete: "cascade" }),
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => uploadedAudioAssets.id, { onDelete: "cascade" }),
+    actionId: text("action_id").notNull(),
+    status: text("status", { enum: transcriptionJobStatuses }).notNull(),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    maximumAttempts: integer("maximum_attempts").notNull(),
+    availableAt: integer("available_at", { mode: "timestamp_ms" }).notNull(),
+    leaseToken: text("lease_token"),
+    leaseExpiresAt: integer("lease_expires_at", { mode: "timestamp_ms" }),
+    startedAt: integer("started_at", { mode: "timestamp_ms" }),
+    completedAt: integer("completed_at", { mode: "timestamp_ms" }),
+    failedAt: integer("failed_at", { mode: "timestamp_ms" }),
+    cancelledAt: integer("cancelled_at", { mode: "timestamp_ms" }),
+    safeErrorCode: text("safe_error_code"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "uploaded_audio_transcription_jobs_action_fk",
+      columns: [table.analysisSessionId, table.actionId, table.assetId],
+      foreignColumns: [
+        uploadedAudioActions.analysisSessionId,
+        uploadedAudioActions.actionId,
+        uploadedAudioActions.assetId,
+      ],
+    }).onDelete("cascade"),
+    uniqueIndex("uploaded_audio_transcription_jobs_session_action_uq").on(
+      table.analysisSessionId,
+      table.actionId,
+    ),
+    uniqueIndex("uploaded_audio_transcription_jobs_active_asset_uq")
+      .on(table.assetId)
+      .where(sql`${table.status} in ('queued', 'running')`),
+    index("uploaded_audio_transcription_jobs_claim_idx").on(
+      table.status,
+      table.availableAt,
+      table.createdAt,
+      table.id,
+    ),
+    index("uploaded_audio_transcription_jobs_expired_lease_idx").on(
+      table.status,
+      table.leaseExpiresAt,
+    ),
+    index("uploaded_audio_transcription_jobs_session_asset_latest_idx").on(
+      table.analysisSessionId,
+      table.assetId,
+      table.createdAt,
+      table.id,
+    ),
+    uniqueIndex("uploaded_audio_transcription_jobs_lease_token_uq")
+      .on(table.leaseToken)
+      .where(sql`${table.leaseToken} is not null`),
+    check(
+      "uploaded_audio_transcription_jobs_status_ck",
+      sql`${table.status} in ('queued', 'running', 'completed', 'failed', 'cancelled')`,
+    ),
+    check(
+      "uploaded_audio_transcription_jobs_attempt_count_ck",
+      sql`${table.attemptCount} >= 0`,
+    ),
+    check(
+      "uploaded_audio_transcription_jobs_maximum_attempts_ck",
+      sql`${table.maximumAttempts} between 1 and 5`,
+    ),
+    check(
+      "uploaded_audio_transcription_jobs_attempt_limit_ck",
+      sql`${table.attemptCount} <= ${table.maximumAttempts}`,
+    ),
+    check(
+      "uploaded_audio_transcription_jobs_safe_error_ck",
+      sql`${table.safeErrorCode} is null or length(${table.safeErrorCode}) <= 80`,
+    ),
+    check(
+      "uploaded_audio_transcription_jobs_updated_ck",
+      sql`${table.updatedAt} >= ${table.createdAt}`,
+    ),
+    check(
+      "uploaded_audio_transcription_jobs_running_ck",
+      sql`(${table.status} = 'running' and ${table.leaseToken} is not null and ${table.leaseExpiresAt} is not null and ${table.startedAt} is not null and ${table.attemptCount} >= 1) or (${table.status} <> 'running' and ${table.leaseToken} is null and ${table.leaseExpiresAt} is null)`,
+    ),
+    check(
+      "uploaded_audio_transcription_jobs_terminal_timestamps_ck",
+      sql`(${table.status} = 'completed' and ${table.completedAt} is not null and ${table.failedAt} is null and ${table.cancelledAt} is null) or (${table.status} = 'failed' and ${table.completedAt} is null and ${table.failedAt} is not null and ${table.cancelledAt} is null) or (${table.status} = 'cancelled' and ${table.completedAt} is null and ${table.failedAt} is null and ${table.cancelledAt} is not null) or (${table.status} in ('queued', 'running') and ${table.completedAt} is null and ${table.failedAt} is null and ${table.cancelledAt} is null)`,
+    ),
+    check(
+      "uploaded_audio_transcription_jobs_completed_error_ck",
+      sql`${table.status} <> 'completed' or ${table.safeErrorCode} is null`,
+    ),
+    check(
+      "uploaded_audio_transcription_jobs_failed_error_ck",
+      sql`${table.status} <> 'failed' or ${table.safeErrorCode} is not null`,
+    ),
+    check(
+      "uploaded_audio_transcription_jobs_queued_terminal_ck",
+      sql`${table.status} <> 'queued' or (${table.completedAt} is null and ${table.failedAt} is null and ${table.cancelledAt} is null)`,
     ),
   ],
 );
@@ -696,6 +811,11 @@ export const schema = {
   realtimeAttempts,
   recordingAssets,
   analysisSessions,
+  uploadedAudioAssets,
+  uploadedAudioActions,
+  uploadedAudioTranscriptionJobs,
+  uploadedAudioDeletionBatches,
+  uploadedAudioDeletionFiles,
   transcriptSegments,
   questionCandidates,
   questionCandidateSegments,

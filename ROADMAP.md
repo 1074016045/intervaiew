@@ -38,6 +38,12 @@ The deterministic Fake transcription provider is network-free, testable for inte
 
 v0.4 does not implement live microphone capture, system/tab audio interception, covert capture, speaker diarization, real production transcription, scoring, resume evidence retrieval, suggested/generated answers, automatic speaking, or hidden real-time assistance.
 
+## v0.5 (complete): SQLite transcription jobs
+
+Implemented: asynchronous enqueue/reuse responses, persistent five-state jobs, composite action/session/asset binding, one-active-job protection, guarded claims with fixed leases, bounded expired recovery and retries, deterministic local worker lifecycle, atomic job/asset/transcript completion, transactional cancellation during durable deletion planning, public polling summaries, refresh-safe UI polling, and new-action retry after terminal failure.
+
+The worker is an explicitly enabled non-production embedded Node loop using only the deterministic Fake provider. It provides at-least-once provider invocation and exactly-once committed transcript effect. A real provider, production/background deployment, external queue, Redis, object storage, auth, diarization, capture, answers, and scoring remain future/out of scope.
+
 ## Later candidates
 
 Accessibility audits, database backup/import, configurable retention, provider observability without content logging, and additional deterministic practice formats.

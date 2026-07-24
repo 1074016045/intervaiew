@@ -30,7 +30,7 @@ test("explicitly uploads, transcribes, restores, and deletes uploaded audio", as
     page.getByRole("heading", { name: "Uploaded Audio", exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("v0.4 performs no speaker diarization"),
+    page.getByText(/There is no diarization/),
   ).toBeVisible();
   await page
     .getByLabel("One speaker role for the whole file")
@@ -40,7 +40,7 @@ test("explicitly uploads, transcribes, restores, and deletes uploaded audio", as
     mimeType: "audio/wav",
     buffer: syntheticWav(),
   });
-  await page.getByRole("button", { name: "Upload audio" }).click();
+  await page.getByRole("button", { name: /Upload selected practice audio/ }).click();
 
   await expect(page.getByTestId("uploaded-audio-asset")).toHaveCount(1);
   await expect(page.getByTestId("uploaded-audio-status")).toHaveText(
@@ -48,9 +48,9 @@ test("explicitly uploads, transcribes, restores, and deletes uploaded audio", as
   );
   await expect(page.getByTestId("final-segment")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Transcribe", exact: true }).click();
+  await page.getByRole("button", { name: /Transcribe synthetic\.wav/ }).click();
   await expect(page.getByTestId("uploaded-audio-status")).toHaveText(
-    "completed",
+    "Completed",
   );
   await expect(page.getByTestId("final-segment")).toHaveCount(2);
   await expect(page.getByTestId("final-transcript")).toContainText(
@@ -62,12 +62,12 @@ test("explicitly uploads, transcribes, restores, and deletes uploaded audio", as
 
   await page.reload();
   await expect(page.getByTestId("uploaded-audio-status")).toHaveText(
-    "completed",
+    "Completed",
   );
   await expect(page.getByTestId("final-segment")).toHaveCount(2);
 
   page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "Delete uploaded audio" }).click();
+  await page.getByRole("button", { name: /Delete uploaded audio synthetic\.wav/ }).click();
   await expect(page.getByTestId("uploaded-audio-asset")).toHaveCount(0);
   await expect(page.getByTestId("final-segment")).toHaveCount(2);
   await expect(page.getByTestId("final-transcript")).toContainText(

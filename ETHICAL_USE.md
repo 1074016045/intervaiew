@@ -14,6 +14,6 @@ Question Boundary Detector only segments authorized synthetic/practice final tra
 
 Question Understanding classifies active finalized practice questions and extracts bounded response dimensions, constraints, focus terms, and clarification metadata. This metadata describes the question, not the candidate or an answer. It must not be extended to retrieve resume evidence, match candidate experience, score responses, draft/suggest/speak answers, or support an unauthorized real interview. Analysis remains an explicit visible action and uses no capture capability.
 
-Uploaded Audio is only for practice, authorized demonstrations, or research using recordings the user is authorized to process. Upload and transcription are separate visible actions, and one declared speaker role applies to the whole file. v0.4 performs no diarization or live capture.
+Uploaded Audio is only for practice, authorized demonstrations, or research using recordings the user is authorized to process. Upload and asynchronous transcription are separate visible actions, and one declared speaker role applies to the whole file. v0.5 performs no diarization or live capture.
 
 Do not use Uploaded Audio for covert or unauthorized interview recording, system/tab audio interception, another application's call audio, hidden real-time assistance, answer generation, automatic speaking, candidate scoring, or fabricated experience. Users must obtain all consent required by law, platform terms, employer rules, and every relevant participant before processing a recording.

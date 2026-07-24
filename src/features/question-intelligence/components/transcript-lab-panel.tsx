@@ -108,6 +108,10 @@ export function TranscriptLabPanel({
     [id],
   );
 
+  const handleUploadedTranscriptCommitted = useCallback(async () => {
+    await Promise.all([load(), loadBoundary(), loadUnderstanding()]);
+  }, [load, loadBoundary, loadUnderstanding]);
+
   useEffect(() => {
     mountedRef.current = true;
     const controller = new AbortController();
@@ -588,9 +592,7 @@ export function TranscriptLabPanel({
 
       <UploadedAudioPanel
         sessionId={id}
-        onTranscriptCommitted={async () => {
-          await Promise.all([load(), loadBoundary(), loadUnderstanding()]);
-        }}
+        onTranscriptCommitted={handleUploadedTranscriptCommitted}
       />
 
       <section className="card stack" aria-labelledby="question-boundary-title">

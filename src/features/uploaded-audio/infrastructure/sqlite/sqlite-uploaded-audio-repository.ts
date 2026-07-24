@@ -1,5 +1,5 @@
 import "server-only";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type {
   BeginDeletionResult,
@@ -16,6 +16,7 @@ import {
   uploadedAudioAssets,
   uploadedAudioDeletionBatches,
   uploadedAudioDeletionFiles,
+  uploadedAudioTranscriptionJobs,
 } from "@/infrastructure/db/schema";
 
 type UploadedAudioDatabase = BetterSQLite3Database<typeof schema>;
@@ -45,7 +46,23 @@ export class SqliteUploadedAudioRepository implements UploadedAudioRepositoryPor
           .where(eq(uploadedAudioAssets.analysisSessionId, sessionId))
           .orderBy(uploadedAudioAssets.createdAt)
           .all()
-          .map((asset) => this.publicView(asset)),
+          .map((asset) => {
+            const latestJob = this.db
+              .select()
+              .from(uploadedAudioTranscriptionJobs)
+              .where(
+                and(
+                  eq(uploadedAudioTranscriptionJobs.analysisSessionId, sessionId),
+                  eq(uploadedAudioTranscriptionJobs.assetId, asset.id),
+                ),
+              )
+              .orderBy(
+                desc(uploadedAudioTranscriptionJobs.createdAt),
+                desc(uploadedAudioTranscriptionJobs.id),
+              )
+              .get();
+            return this.publicView(asset, latestJob);
+          }),
       ),
     } as const;
   }
@@ -360,8 +377,6 @@ export class SqliteUploadedAudioRepository implements UploadedAudioRepositoryPor
         )
         .get();
       if (!asset) return { kind: "asset-not-found" } as const;
-      if (asset.status === "transcribing")
-        return { kind: "transcription-active" } as const;
       if (asset.status === "deleting") {
         const activeBatch = tx
           .select()
@@ -432,10 +447,47 @@ export class SqliteUploadedAudioRepository implements UploadedAudioRepositoryPor
           updatedAt: now,
         })
         .run();
-      tx.update(uploadedAudioAssets)
-        .set({ status: "deleting", updatedAt: now })
-        .where(eq(uploadedAudioAssets.id, input.assetId))
+      const activeJobs = tx
+        .select({ id: uploadedAudioTranscriptionJobs.id })
+        .from(uploadedAudioTranscriptionJobs)
+        .where(
+          and(
+            eq(uploadedAudioTranscriptionJobs.assetId, input.assetId),
+            inArray(uploadedAudioTranscriptionJobs.status, ["queued", "running"]),
+          ),
+        )
+        .all();
+      const cancelledJobs = tx
+        .update(uploadedAudioTranscriptionJobs)
+        .set({
+          status: "cancelled",
+          leaseToken: null,
+          leaseExpiresAt: null,
+          cancelledAt: now,
+          safeErrorCode: "UPLOADED_AUDIO_ASSET_DELETED",
+          updatedAt: sql`max(${uploadedAudioTranscriptionJobs.updatedAt}, ${now.getTime()})`,
+        })
+        .where(
+          and(
+            eq(uploadedAudioTranscriptionJobs.assetId, input.assetId),
+            inArray(uploadedAudioTranscriptionJobs.status, ["queued", "running"]),
+          ),
+        )
         .run();
+      if (cancelledJobs.changes !== activeJobs.length)
+        throw new Error("Active transcription jobs were not cancelled.");
+      const deletingAsset = tx
+        .update(uploadedAudioAssets)
+        .set({ status: "deleting", updatedAt: now })
+        .where(
+          and(
+            eq(uploadedAudioAssets.id, input.assetId),
+            ne(uploadedAudioAssets.status, "deleting"),
+          ),
+        )
+        .run();
+      if (deletingAsset.changes !== 1)
+        throw new Error("The uploaded-audio asset was not marked deleting.");
       return { kind: "ready", batchId: input.batchId } as const;
     });
     if (result.kind !== "ready" && result.kind !== "duplicate") return result;
@@ -473,8 +525,6 @@ export class SqliteUploadedAudioRepository implements UploadedAudioRepositoryPor
         .from(uploadedAudioAssets)
         .where(eq(uploadedAudioAssets.analysisSessionId, input.sessionId))
         .all();
-      if (assets.some((asset) => asset.status === "transcribing"))
-        return { kind: "transcription-active" } as const;
       if (assets.some((asset) => asset.status === "deleting"))
         return { kind: "action-conflict" } as const;
       const supplied = new Map(input.files.map((file) => [file.assetId, file]));
@@ -513,8 +563,44 @@ export class SqliteUploadedAudioRepository implements UploadedAudioRepositoryPor
             })),
           )
           .run();
-      if (assets.length)
-        tx.update(uploadedAudioAssets)
+      const activeJobs = tx
+        .select({ id: uploadedAudioTranscriptionJobs.id })
+        .from(uploadedAudioTranscriptionJobs)
+        .where(
+          and(
+            eq(
+              uploadedAudioTranscriptionJobs.analysisSessionId,
+              input.sessionId,
+            ),
+            inArray(uploadedAudioTranscriptionJobs.status, ["queued", "running"]),
+          ),
+        )
+        .all();
+      const cancelledJobs = tx
+        .update(uploadedAudioTranscriptionJobs)
+        .set({
+          status: "cancelled",
+          leaseToken: null,
+          leaseExpiresAt: null,
+          cancelledAt: now,
+          safeErrorCode: "UPLOADED_AUDIO_SESSION_DELETED",
+          updatedAt: sql`max(${uploadedAudioTranscriptionJobs.updatedAt}, ${now.getTime()})`,
+        })
+        .where(
+          and(
+            eq(
+              uploadedAudioTranscriptionJobs.analysisSessionId,
+              input.sessionId,
+            ),
+            inArray(uploadedAudioTranscriptionJobs.status, ["queued", "running"]),
+          ),
+        )
+        .run();
+      if (cancelledJobs.changes !== activeJobs.length)
+        throw new Error("Active transcription jobs were not cancelled.");
+      if (assets.length) {
+        const deletingAssets = tx
+          .update(uploadedAudioAssets)
           .set({ status: "deleting", updatedAt: now })
           .where(
             inArray(
@@ -523,6 +609,9 @@ export class SqliteUploadedAudioRepository implements UploadedAudioRepositoryPor
             ),
           )
           .run();
+        if (deletingAssets.changes !== assets.length)
+          throw new Error("Uploaded-audio assets were not marked deleting.");
+      }
       return { kind: "ready", batchId: input.batchId } as const;
     });
     if (result.kind !== "ready" && result.kind !== "duplicate") return result;
@@ -760,10 +849,30 @@ export class SqliteUploadedAudioRepository implements UploadedAudioRepositoryPor
     });
   }
 
-  private publicView(asset: typeof uploadedAudioAssets.$inferSelect) {
+  private publicView(
+    asset: typeof uploadedAudioAssets.$inferSelect,
+    latestJob?: typeof uploadedAudioTranscriptionJobs.$inferSelect,
+  ) {
     const { relativePath, ...view } = this.storedView(asset);
     void relativePath;
-    return Object.freeze(view);
+    return Object.freeze({
+      ...view,
+      latestJob: latestJob
+        ? Object.freeze({
+            id: latestJob.id,
+            status: latestJob.status,
+            attemptCount: latestJob.attemptCount,
+            maximumAttempts: latestJob.maximumAttempts,
+            availableAt: latestJob.availableAt.getTime(),
+            safeErrorCode: latestJob.safeErrorCode,
+            createdAt: latestJob.createdAt.getTime(),
+            updatedAt: latestJob.updatedAt.getTime(),
+            completedAt: latestJob.completedAt?.getTime() ?? null,
+            failedAt: latestJob.failedAt?.getTime() ?? null,
+            cancelledAt: latestJob.cancelledAt?.getTime() ?? null,
+          })
+        : null,
+    });
   }
 
   private storedView(
@@ -786,6 +895,7 @@ export class SqliteUploadedAudioRepository implements UploadedAudioRepositoryPor
       failedAt: asset.failedAt?.getTime() ?? null,
       createdAt: asset.createdAt.getTime(),
       updatedAt: asset.updatedAt.getTime(),
+      latestJob: null,
     });
   }
 }

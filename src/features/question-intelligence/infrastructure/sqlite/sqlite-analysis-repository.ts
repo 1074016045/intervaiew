@@ -1,5 +1,5 @@
 import "server-only";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type {
   AnalysisRepositoryPort,
@@ -20,6 +20,7 @@ import {
   transcriptSegments,
   uploadedAudioActions,
   uploadedAudioAssets,
+  uploadedAudioTranscriptionJobs,
 } from "@/infrastructure/db/schema";
 
 type AnalysisDatabase = BetterSQLite3Database<typeof schema>;
@@ -219,6 +220,28 @@ export class SqliteAnalysisRepository implements AnalysisRepositoryPort {
     input: Parameters<AnalysisRepositoryPort["ingestUploadedFinals"]>[0],
   ) {
     return this.db.transaction((tx) => {
+      const nowMs = this.now();
+      const job = tx
+        .select()
+        .from(uploadedAudioTranscriptionJobs)
+        .where(eq(uploadedAudioTranscriptionJobs.id, input.jobId))
+        .get();
+      if (
+        !job ||
+        job.analysisSessionId !== input.sessionId ||
+        job.assetId !== input.assetId ||
+        job.actionId !== input.actionId
+      )
+        return { kind: "job-invalid" } as const;
+      const completedJob = job.status === "completed";
+      if (
+        !completedJob &&
+        (job.status !== "running" ||
+          job.leaseToken !== input.leaseToken ||
+          !job.leaseExpiresAt ||
+          job.leaseExpiresAt.getTime() <= nowMs)
+      )
+        return { kind: "job-invalid" } as const;
       const session = tx
         .select()
         .from(analysisSessions)
@@ -226,6 +249,7 @@ export class SqliteAnalysisRepository implements AnalysisRepositoryPort {
         .get();
       if (!session) return { kind: "session-not-found" } as const;
       if (
+        !completedJob &&
         session.status !== "draft" &&
         session.status !== "active" &&
         session.status !== "paused"
@@ -261,6 +285,8 @@ export class SqliteAnalysisRepository implements AnalysisRepositoryPort {
         action.assetId !== input.assetId
       )
         return { kind: "action-invalid" } as const;
+      if (asset.speakerRole !== input.speakerRole)
+        return { kind: "asset-state-invalid" } as const;
       const existing = tx
         .select()
         .from(transcriptSegments)
@@ -285,47 +311,22 @@ export class SqliteAnalysisRepository implements AnalysisRepositoryPort {
             segment.endMs === chunk.endMs
           );
         });
-      if (asset.status === "completed" && existingMatchesInput)
+      if (
+        completedJob &&
+        asset.status === "completed" &&
+        existingMatchesInput
+      )
         return {
           kind: "duplicate",
           segments: Object.freeze(
             existing.map((segment) => this.segmentView(segment)),
           ),
         } as const;
-      if (asset.status !== "transcribing")
+      if (completedJob || asset.status !== "transcribing" || existing.length)
         return { kind: "asset-state-invalid" } as const;
-      const completedAt = new Date(this.now());
-      if (existing.length) {
-        if (!existingMatchesInput)
-          return { kind: "asset-state-invalid" } as const;
-        if (session.status === "draft")
-          tx.update(analysisSessions)
-            .set({
-              status: "active",
-              startedAt: session.startedAt ?? completedAt,
-              updatedAt: completedAt,
-            })
-            .where(eq(analysisSessions.id, input.sessionId))
-            .run();
-        tx.update(uploadedAudioAssets)
-          .set({
-            status: "completed",
-            providerLabel: input.providerLabel,
-            transcriptSegmentCount: existing.length,
-            errorCode: null,
-            completedAt,
-            failedAt: null,
-            updatedAt: completedAt,
-          })
-          .where(eq(uploadedAudioAssets.id, input.assetId))
-          .run();
-        return {
-          kind: "duplicate",
-          segments: Object.freeze(
-            existing.map((segment) => this.segmentView(segment)),
-          ),
-        } as const;
-      }
+      const completedAt = new Date(
+        Math.max(nowMs, job.createdAt.getTime(), input.createdAt),
+      );
       const latest = tx
         .select({ sequence: transcriptSegments.sequence })
         .from(transcriptSegments)
@@ -346,20 +347,30 @@ export class SqliteAnalysisRepository implements AnalysisRepositoryPort {
         sourceUploadedAudioAssetId: input.assetId,
         createdAt: new Date(input.createdAt + index),
       }));
-      tx.insert(transcriptSegments).values(segments).run();
+      const inserted = tx.insert(transcriptSegments).values(segments).run();
+      if (inserted.changes !== segments.length)
+        throw new Error("Uploaded-audio transcript insertion was incomplete.");
       this.beforeUploadedAssetCompletion();
       if (session.status === "draft") {
-        const now = new Date(this.now());
-        tx.update(analysisSessions)
+        const activated = tx
+          .update(analysisSessions)
           .set({
             status: "active",
-            startedAt: session.startedAt ?? now,
-            updatedAt: now,
+            startedAt: session.startedAt ?? completedAt,
+            updatedAt: completedAt,
           })
-          .where(eq(analysisSessions.id, input.sessionId))
+          .where(
+            and(
+              eq(analysisSessions.id, input.sessionId),
+              eq(analysisSessions.status, "draft"),
+            ),
+          )
           .run();
+        if (activated.changes !== 1)
+          throw new Error("The analysis session was not activated.");
       }
-      tx.update(uploadedAudioAssets)
+      const completedAssetUpdate = tx
+        .update(uploadedAudioAssets)
         .set({
           status: "completed",
           providerLabel: input.providerLabel,
@@ -369,8 +380,38 @@ export class SqliteAnalysisRepository implements AnalysisRepositoryPort {
           failedAt: null,
           updatedAt: completedAt,
         })
-        .where(eq(uploadedAudioAssets.id, input.assetId))
+        .where(
+          and(
+            eq(uploadedAudioAssets.id, input.assetId),
+            eq(uploadedAudioAssets.analysisSessionId, input.sessionId),
+            eq(uploadedAudioAssets.status, "transcribing"),
+            eq(uploadedAudioAssets.speakerRole, input.speakerRole),
+          ),
+        )
         .run();
+      if (completedAssetUpdate.changes !== 1)
+        throw new Error("The uploaded-audio asset was not completed.");
+      const completedJobUpdate = tx
+        .update(uploadedAudioTranscriptionJobs)
+        .set({
+          status: "completed",
+          leaseToken: null,
+          leaseExpiresAt: null,
+          completedAt,
+          safeErrorCode: null,
+          updatedAt: completedAt,
+        })
+        .where(
+          and(
+            eq(uploadedAudioTranscriptionJobs.id, input.jobId),
+            eq(uploadedAudioTranscriptionJobs.status, "running"),
+            eq(uploadedAudioTranscriptionJobs.leaseToken, input.leaseToken),
+            sql`${uploadedAudioTranscriptionJobs.leaseExpiresAt} > ${completedAt.getTime()}`,
+          ),
+        )
+        .run();
+      if (completedJobUpdate.changes !== 1)
+        throw new Error("The transcription job completion lease was stale.");
       return {
         kind: "created",
         segments: Object.freeze(

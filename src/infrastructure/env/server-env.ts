@@ -33,6 +33,7 @@ export const serverEnvSchema = z
     QUESTION_BOUNDARY_FAKE_SEMANTIC_ENABLED: booleanString("false"),
     QUESTION_UNDERSTANDING_FAKE_SEMANTIC_ENABLED: booleanString("false"),
     UPLOADED_AUDIO_ENABLED: booleanString("false"),
+    UPLOADED_AUDIO_TRANSCRIPTION_WORKER_ENABLED: booleanString("false"),
     UPLOADED_AUDIO_FAKE_TRANSCRIPTION_ENABLED: booleanString("false"),
     UPLOADED_AUDIO_MAX_BYTES: z.coerce
       .number()

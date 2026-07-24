@@ -28,7 +28,8 @@ export type IngestUploadedFinalsResult =
   | Readonly<{ kind: "session-state-invalid" }>
   | Readonly<{ kind: "asset-not-found" }>
   | Readonly<{ kind: "asset-state-invalid" }>
-  | Readonly<{ kind: "action-invalid" }>;
+  | Readonly<{ kind: "action-invalid" }>
+  | Readonly<{ kind: "job-invalid" }>;
 
 export interface AnalysisRepositoryPort {
   createSession(input: {
@@ -50,6 +51,8 @@ export interface AnalysisRepositoryPort {
       sessionId: string;
       assetId: string;
       actionId: string;
+      jobId: string;
+      leaseToken: string;
       providerLabel: string;
       speakerRole: "interviewer" | "candidate";
       chunks: ReadonlyArray<
