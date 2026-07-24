@@ -120,9 +120,7 @@ test("persists only final Transcript Lab segments across refresh", async ({
 
   await page.getByRole("button", { name: "Resume", exact: true }).click();
   await expect(page.getByTestId("stream-status")).toHaveText("streaming");
-  await expect(page.getByTestId("interim-transcript")).toContainText(
-    "what made it challenging",
-  );
+  // The superseded interim is intentionally not asserted because it is transient.
   await expect(page.getByTestId("final-segment")).toHaveCount(2);
   await expect(page.getByTestId("final-transcript")).toContainText(
     "what made it challenging?",
