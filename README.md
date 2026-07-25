@@ -75,6 +75,8 @@ The bundled provider remains deterministic and network-free. No real provider ex
 
 Deleting an uploaded asset uses a durable staged-delete plan so database and filesystem failures can be retried safely. Successful deletion removes metadata and stored bytes. Final transcript segments already committed remain in the analysis session; their nullable source link is cleared by the database foreign key. Delete the analysis session to remove those transcript segments. Upload, transcription, and deletion use session-scoped action receipts for idempotency.
 
+The first v0.6 increment adds Uploaded Audio accessibility improvements and automated accessibility regression coverage: initial loading is announced, per-asset status changes remain polite, and cancelling/deleting is exposed as an explicit busy state without moving keyboard focus during polling refreshes.
+
 ## Question Boundary Detector
 
 Question Boundary Detector decides only whether the persisted, ordered final interviewer transcript has formed a complete question. Candidate and unknown speaker segments are excluded. Interim text can remain visible in the Lab, but never becomes a finalized-question source.

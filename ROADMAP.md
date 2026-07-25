@@ -44,9 +44,15 @@ Implemented: asynchronous enqueue/reuse responses, persistent five-state jobs, c
 
 The worker is an explicitly enabled non-production embedded Node loop using only the deterministic Fake provider. It provides at-least-once provider invocation and exactly-once committed transcript effect. A real provider, production/background deployment, external queue, Redis, object storage, auth, diarization, capture, answers, and scoring remain future/out of scope.
 
+## v0.6 (in progress): Accessibility and local operations
+
+The first increment covers Uploaded Audio accessibility improvements and deterministic component-level polling tests. It adds automated accessibility regression coverage for loading, status, busy, error, keyboard, focus, and destructive-action behavior, together with controlled-timer coverage for polling, visibility changes, failures, recovery, aborts, and unmount cleanup.
+
+Remaining v0.6 work: database backup/import, configurable retention, and content-free observability.
+
 ## Later candidates
 
-Accessibility audits, database backup/import, configurable retention, provider observability without content logging, and additional deterministic practice formats.
+Additional deterministic practice formats remain later candidates.
 
 A later natural-follow-up mode would need a separate product and ethical review. It should remain practice-only, consented, bounded to the stored competency/question context, visibly distinguish generated follow-ups, keep application-owned state and persistence, prohibit scoring/suggested answers, and include deterministic limits and Fake-provider tests before any real-provider rollout. Covert assistance and multi-agent orchestration are not planned.
 
