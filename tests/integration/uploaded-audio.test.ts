@@ -20,6 +20,8 @@ import type { UploadedAudioStoragePort } from "@/features/uploaded-audio/applica
 import { FakeAudioTranscriptionProvider } from "@/features/uploaded-audio/infrastructure/fake/fake-audio-transcription-provider";
 import { FilesystemUploadedAudioStorage } from "@/features/uploaded-audio/infrastructure/filesystem/filesystem-uploaded-audio-storage";
 import { SqliteUploadedAudioRepository } from "@/features/uploaded-audio/infrastructure/sqlite/sqlite-uploaded-audio-repository";
+import { SqliteTranscriptionJobQueue } from "@/features/uploaded-audio/infrastructure/sqlite/sqlite-transcription-job-queue";
+import { UploadedAudioTranscriptionWorker } from "@/features/uploaded-audio/application/uploaded-audio-transcription-worker";
 
 const migrationsFolder = resolve("src/infrastructure/db/migrations");
 
@@ -95,6 +97,7 @@ describe("Uploaded Audio SQLite/filesystem integration", () => {
   let sessions: AnalysisSessionService;
   let analysisRepository: SqliteAnalysisRepository;
   let repository: SqliteUploadedAudioRepository;
+  let queue: SqliteTranscriptionJobQueue;
   let provider: FakeAudioTranscriptionProvider;
   let storage: FilesystemUploadedAudioStorage;
   let service: UploadedAudioService;
@@ -120,15 +123,16 @@ describe("Uploaded Audio SQLite/filesystem integration", () => {
       createId,
       () => 1_700_000_000_000,
     );
+    queue = new SqliteTranscriptionJobQueue(connection.db);
     provider = new FakeAudioTranscriptionProvider();
     storage = new FilesystemUploadedAudioStorage(audioRoot);
     sessions = new AnalysisSessionService(analysisRepository);
     service = new UploadedAudioService(
       repository,
       storage,
-      provider,
-      new TranscriptIngestionService(analysisRepository),
+      queue,
       1_024,
+      true,
       createId,
       () => 1_700_000_000_100,
     );
@@ -163,12 +167,13 @@ describe("Uploaded Audio SQLite/filesystem integration", () => {
     storageOverride: UploadedAudioStoragePort = storage,
     analysisOverride: SqliteAnalysisRepository = analysisRepository,
   ) {
+    void analysisOverride;
     return new UploadedAudioService(
       repositoryOverride,
       storageOverride,
-      provider,
-      new TranscriptIngestionService(analysisOverride),
+      queue,
       1_024,
+      true,
       () => uuid(nextId++),
       () => 1_700_000_000_100,
     );
@@ -177,6 +182,21 @@ describe("Uploaded Audio SQLite/filesystem integration", () => {
   function sessionFiles(sessionId: string) {
     const directoryPath = join(audioRoot, sessionId);
     return existsSync(directoryPath) ? readdirSync(directoryPath) : [];
+  }
+
+  async function runWorker(
+    analysisOverride: SqliteAnalysisRepository = analysisRepository,
+    storageOverride: UploadedAudioStoragePort = storage,
+  ) {
+    const worker = new UploadedAudioTranscriptionWorker(
+      queue,
+      storageOverride,
+      provider,
+      new TranscriptIngestionService(analysisOverride),
+      () => 1_700_000_000_100,
+      () => uuid(nextId++),
+    );
+    return worker.runOneIteration();
   }
 
   function failTranscription(
@@ -296,13 +316,14 @@ describe("Uploaded Audio SQLite/filesystem integration", () => {
     const transcribed = await service.transcribe(session.id, first.asset!.id, {
       actionId: transcribeAction,
     });
+    await runWorker();
     const repeated = await service.transcribe(session.id, first.asset!.id, {
       actionId: transcribeAction,
     });
-    expect(transcribed.asset.status).toBe("completed");
+    expect(transcribed.job.status).toBe("queued");
     expect(repeated).toMatchObject({
       duplicated: true,
-      asset: { status: "completed" },
+      job: { status: "completed" },
     });
     expect(provider.attemptCount(first.asset!.id)).toBe(1);
     expect(sessions.get(session.id).segments).toHaveLength(2);
@@ -315,6 +336,7 @@ describe("Uploaded Audio SQLite/filesystem integration", () => {
     await service.transcribe(session.id, uploaded.asset!.id, {
       actionId: uuid(903),
     });
+    await runWorker();
     const segments = sessions.get(session.id).segments;
     expect(segments).toHaveLength(2);
     expect(
@@ -348,6 +370,7 @@ describe("Uploaded Audio SQLite/filesystem integration", () => {
     await service.transcribe(session.id, uploaded.asset!.id, {
       actionId: uuid(905),
     });
+    await runWorker();
     expect(sessions.get(session.id).segments).toMatchObject([
       { speakerRole: "candidate" },
     ]);
@@ -359,29 +382,27 @@ describe("Uploaded Audio SQLite/filesystem integration", () => {
     service = new UploadedAudioService(
       repository,
       new FilesystemUploadedAudioStorage(audioRoot),
-      provider,
-      new TranscriptIngestionService(analysisRepository),
+      queue,
       1_024,
+      true,
       () => uuid(nextId++),
+      () => 1_700_000_000_100,
     );
     const uploaded = await upload(session.id);
-    await expect(
-      service.transcribe(session.id, uploaded.asset!.id, {
-        actionId: uuid(906),
-      }),
-    ).rejects.toThrow(/configured/);
+    const actionId = uuid(906);
+    await service.transcribe(session.id, uploaded.asset!.id, { actionId });
+    await runWorker();
     expect(repository.get(session.id, uploaded.asset!.id)).toMatchObject({
       status: "failed",
-      errorCode: "UPLOADED_AUDIO_TRANSCRIPTION_FAILED",
+      errorCode: "UPLOADED_AUDIO_PROVIDER_TEMPORARY",
     });
     expect(sessions.get(session.id).segments).toHaveLength(0);
-    await service.transcribe(session.id, uploaded.asset!.id, {
-      actionId: uuid(907),
-    });
-    expect(repository.get(session.id, uploaded.asset!.id)?.status).toBe(
-      "completed",
-    );
-    expect(sessions.get(session.id).segments).toHaveLength(2);
+    await expect(
+      service.transcribe(session.id, uploaded.asset!.id, { actionId: uuid(907) }),
+    ).rejects.toThrow(/queued or running/);
+    await expect(
+      service.transcribe(session.id, uploaded.asset!.id, { actionId }),
+    ).resolves.toMatchObject({ duplicated: true, job: { status: "queued" } });
   });
 
   it("allows only the current transcribing action to transition to failed", async () => {
@@ -441,6 +462,7 @@ describe("Uploaded Audio SQLite/filesystem integration", () => {
     await service.transcribe(session.id, completed.asset!.id, {
       actionId: completedAction,
     });
+    await runWorker();
     expect(
       failTranscription(session.id, completed.asset!.id, completedAction),
     ).toMatchObject({ status: "completed", errorCode: null });
@@ -488,11 +510,10 @@ describe("Uploaded Audio SQLite/filesystem integration", () => {
       },
     );
     const failingService = createService(repository, storage, failingAnalysis);
-    await expect(
-      failingService.transcribe(session.id, uploaded.asset!.id, {
-        actionId: uuid(950),
-      }),
-    ).rejects.toThrow(/failed safely/);
+    await failingService.transcribe(session.id, uploaded.asset!.id, {
+      actionId: uuid(950),
+    });
+    await runWorker(failingAnalysis);
     expect(sessions.get(session.id).segments).toHaveLength(0);
     expect(sessions.get(session.id).session.status).toBe("draft");
     expect(repository.get(session.id, uploaded.asset!.id)).toMatchObject({
@@ -504,6 +525,7 @@ describe("Uploaded Audio SQLite/filesystem integration", () => {
     await service.transcribe(session.id, uploaded.asset!.id, {
       actionId: uuid(951),
     });
+    await runWorker();
     expect(sessions.get(session.id).segments).toHaveLength(2);
     expect(repository.get(session.id, uploaded.asset!.id)?.status).toBe(
       "completed",
@@ -527,6 +549,7 @@ describe("Uploaded Audio SQLite/filesystem integration", () => {
     await service.transcribe(session.id, uploaded.asset!.id, {
       actionId: uuid(909),
     });
+    await runWorker();
     const result = await service.delete(session.id, uploaded.asset!.id, {
       actionId: uuid(910),
     });
@@ -608,9 +631,9 @@ describe("Uploaded Audio SQLite/filesystem integration", () => {
     const compensating = new UploadedAudioService(
       failingRepository,
       new FilesystemUploadedAudioStorage(audioRoot),
-      provider,
-      new TranscriptIngestionService(analysisRepository),
+      queue,
       1_024,
+      true,
       () => uuid(nextId++),
     );
     await expect(
@@ -698,7 +721,7 @@ describe("Uploaded Audio SQLite/filesystem integration", () => {
       retrying.transcribe(session.id, uploaded.asset!.id, {
         actionId: uuid(999),
       }),
-    ).rejects.toThrow(/already being transcribed or deleted/);
+    ).rejects.toThrow(/deletion is in progress/);
     await expect(retrying.deleteSession(session.id)).rejects.toThrow(
       /could not be created safely/,
     );
@@ -1004,19 +1027,17 @@ describe("Uploaded Audio SQLite/filesystem integration", () => {
     expect(sessionFiles(session.id)).toEqual([]);
   });
 
-  it("rejects deletion while transcription is active", async () => {
+  it("cancels queued transcription when deletion wins", async () => {
     const session = createSession();
     const uploaded = await upload(session.id);
-    expect(
-      repository.beginTranscription(session.id, uploaded.asset!.id, uuid(920))
-        .kind,
-    ).toBe("ready");
+    await service.transcribe(session.id, uploaded.asset!.id, {
+      actionId: uuid(920),
+    });
     await expect(
       service.delete(session.id, uploaded.asset!.id, { actionId: uuid(921) }),
-    ).rejects.toThrow(/while transcription is active/);
-    expect(repository.get(session.id, uploaded.asset!.id)).toMatchObject({
-      status: "transcribing",
-    });
+    ).resolves.toEqual({ deleted: true, duplicated: false });
+    expect(repository.get(session.id, uploaded.asset!.id)).toBeNull();
+    expect(await runWorker()).toBe(false);
   });
 
   it("rolls back every staged file after a multi-asset session failure", async () => {

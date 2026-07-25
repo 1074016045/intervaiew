@@ -21,7 +21,15 @@ export async function POST(request: Request, context: Context) {
       assetId,
       await request.json(),
     );
-    return NextResponse.json(result, { headers: noStoreHeaders });
+    const status = result.terminal ? 200 : 202;
+    return NextResponse.json(result, {
+      status,
+      headers: {
+        ...noStoreHeaders,
+        ...(status === 202 ? { "Retry-After": "1" } : {}),
+        Location: `/api/analysis-sessions/${id}/uploaded-audio`,
+      },
+    });
   } catch (error) {
     const response = apiErrorResponse(error, {
       route: "/api/analysis-sessions/[id]/uploaded-audio/[assetId]/transcribe",

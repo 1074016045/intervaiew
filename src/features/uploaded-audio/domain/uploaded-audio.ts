@@ -13,6 +13,29 @@ export const uploadedAudioStatuses = [
 ] as const;
 export type UploadedAudioStatus = (typeof uploadedAudioStatuses)[number];
 
+export const transcriptionJobStatuses = [
+  "queued",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+] as const;
+export type TranscriptionJobStatus = (typeof transcriptionJobStatuses)[number];
+
+export type PublicTranscriptionJobSummary = Readonly<{
+  id: string;
+  status: TranscriptionJobStatus;
+  attemptCount: number;
+  maximumAttempts: number;
+  availableAt: number;
+  safeErrorCode: string | null;
+  createdAt: number;
+  updatedAt: number;
+  completedAt: number | null;
+  failedAt: number | null;
+  cancelledAt: number | null;
+}>;
+
 export const uploadedAudioActionTypes = [
   "upload",
   "transcribe",
@@ -88,6 +111,7 @@ export type UploadedAudioAssetView = Readonly<{
   failedAt: number | null;
   errorCode: string | null;
   transcriptSegmentCount: number;
+  latestJob: PublicTranscriptionJobSummary | null;
 }>;
 
 export type UploadedAudioStoredAsset = UploadedAudioAssetView &

@@ -7,6 +7,12 @@ import type {
 } from "../domain/uploaded-audio";
 
 type ApiErrorPayload = { error?: { message: string } };
+const hasActiveJob = (assets: ReadonlyArray<UploadedAudioAssetView>) =>
+  assets.some(
+    (asset) =>
+      asset.latestJob?.status === "queued" ||
+      asset.latestJob?.status === "running",
+  );
 
 export function UploadedAudioPanel({
   sessionId,
@@ -15,9 +21,7 @@ export function UploadedAudioPanel({
   sessionId: string;
   onTranscriptCommitted: () => Promise<void>;
 }) {
-  const [assets, setAssets] = useState<ReadonlyArray<UploadedAudioAssetView>>(
-    [],
-  );
+  const [assets, setAssets] = useState<ReadonlyArray<UploadedAudioAssetView>>([]);
   const [maximumBytes, setMaximumBytes] = useState(0);
   const [speakerRole, setSpeakerRole] =
     useState<UploadedAudioSpeakerRole>("interviewer");
@@ -25,6 +29,13 @@ export function UploadedAudioPanel({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const mountedRef = useRef(false);
+  const pollTimerRef = useRef<number | null>(null);
+  const pollingRequestRef = useRef(false);
+  const pollAbortRef = useRef<AbortController | null>(null);
+  const notifiedCompletedJobs = useRef(new Set<string>());
+  const assetsRef = useRef<ReadonlyArray<UploadedAudioAssetView>>([]);
+  const scheduleNextPollRef = useRef<() => void>(() => undefined);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -40,16 +51,74 @@ export function UploadedAudioPanel({
         throw new Error(
           payload.error?.message ?? "Uploaded audio could not be loaded.",
         );
+      if (!mountedRef.current) return payload.assets;
+      assetsRef.current = payload.assets;
       setAssets(payload.assets);
       setMaximumBytes(payload.maximumBytes ?? 0);
+      for (const asset of payload.assets) {
+        const job = asset.latestJob;
+        if (job?.status !== "completed" || notifiedCompletedJobs.current.has(job.id))
+          continue;
+        notifiedCompletedJobs.current.add(job.id);
+        await onTranscriptCommitted();
+      }
+      return payload.assets;
     },
-    [sessionId],
+    [onTranscriptCommitted, sessionId],
+  );
+
+  const stopPolling = useCallback(() => {
+    if (pollTimerRef.current !== null) {
+      window.clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+    pollAbortRef.current?.abort();
+    pollAbortRef.current = null;
+  }, []);
+
+  const schedulePoll = useCallback(
+    (delayMs = document.visibilityState === "hidden" ? 2_000 : 1_000) => {
+      if (!mountedRef.current || pollTimerRef.current !== null) return;
+      pollTimerRef.current = window.setTimeout(async () => {
+        pollTimerRef.current = null;
+        if (!mountedRef.current || pollingRequestRef.current) return;
+        pollingRequestRef.current = true;
+        const controller = new AbortController();
+        pollAbortRef.current = controller;
+        try {
+          const current = await load(controller.signal);
+          if (mountedRef.current && current && hasActiveJob(current))
+            scheduleNextPollRef.current();
+        } catch (caught) {
+          if (!(caught instanceof DOMException && caught.name === "AbortError")) {
+            setError(
+              caught instanceof Error
+                ? caught.message
+                : "Uploaded audio could not be loaded.",
+            );
+            if (mountedRef.current) scheduleNextPollRef.current();
+          }
+        } finally {
+          pollingRequestRef.current = false;
+          if (pollAbortRef.current === controller) pollAbortRef.current = null;
+        }
+      }, delayMs);
+    },
+    [load],
   );
 
   useEffect(() => {
+    scheduleNextPollRef.current = () => schedulePoll();
+  }, [schedulePoll]);
+
+  useEffect(() => {
+    mountedRef.current = true;
     const controller = new AbortController();
-    const scheduled = window.setTimeout(() => {
-      void load(controller.signal).catch((caught) => {
+    void load(controller.signal)
+      .then((current) => {
+        if (current && hasActiveJob(current)) schedulePoll();
+      })
+      .catch((caught) => {
         if (!(caught instanceof DOMException && caught.name === "AbortError"))
           setError(
             caught instanceof Error
@@ -57,12 +126,19 @@ export function UploadedAudioPanel({
               : "Uploaded audio could not be loaded.",
           );
       });
-    }, 0);
-    return () => {
-      window.clearTimeout(scheduled);
-      controller.abort();
+    const visibilityChanged = () => {
+      if (!hasActiveJob(assetsRef.current)) return;
+      stopPolling();
+      schedulePoll();
     };
-  }, [load]);
+    document.addEventListener("visibilitychange", visibilityChanged);
+    return () => {
+      mountedRef.current = false;
+      controller.abort();
+      stopPolling();
+      document.removeEventListener("visibilitychange", visibilityChanged);
+    };
+  }, [load, schedulePoll, stopPolling]);
 
   async function upload() {
     if (!file || busyId) return;
@@ -84,9 +160,7 @@ export function UploadedAudioPanel({
       if (inputRef.current) inputRef.current.value = "";
       await load();
     } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : "Audio upload failed.",
-      );
+      setError(caught instanceof Error ? caught.message : "Audio upload failed.");
     } finally {
       setBusyId(null);
     }
@@ -109,14 +183,15 @@ export function UploadedAudioPanel({
       const payload = (await response.json()) as ApiErrorPayload;
       if (!response.ok)
         throw new Error(
-          payload.error?.message ?? "Audio transcription failed safely.",
+          payload.error?.message ?? "Audio transcription could not be queued.",
         );
-      await Promise.all([load(), onTranscriptCommitted()]);
+      const current = await load();
+      if (response.status === 202 && current && hasActiveJob(current)) schedulePoll();
     } catch (caught) {
       setError(
         caught instanceof Error
           ? caught.message
-          : "Audio transcription failed safely.",
+          : "Audio transcription could not be queued.",
       );
       await load().catch(() => undefined);
     } finally {
@@ -128,7 +203,7 @@ export function UploadedAudioPanel({
     if (
       busyId ||
       !window.confirm(
-        "Delete this uploaded file and its metadata? Final transcript segments already committed will remain.",
+        "Delete this uploaded file and its metadata? Active transcription will be cancelled; already committed transcript segments remain.",
       )
     )
       return;
@@ -147,31 +222,39 @@ export function UploadedAudioPanel({
       const payload = (await response.json()) as ApiErrorPayload;
       if (!response.ok)
         throw new Error(payload.error?.message ?? "Audio deletion failed.");
-      await load();
+      const current = await load();
+      if (!current || !hasActiveJob(current)) stopPolling();
     } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : "Audio deletion failed.",
-      );
+      setError(caught instanceof Error ? caught.message : "Audio deletion failed.");
     } finally {
       setBusyId(null);
     }
   }
 
+  function statusLabel(asset: UploadedAudioAssetView) {
+    if (asset.status === "deleting") return "Cancelling/deleting";
+    const job = asset.latestJob;
+    if (!job) return asset.status === "completed" ? "Completed" : asset.status;
+    if (job.status === "queued") return job.attemptCount > 0 ? "Retrying" : "Queued";
+    if (job.status === "running") return "Transcribing";
+    if (job.status === "completed") return "Completed";
+    if (job.status === "failed") return "Failed";
+    return "Cancelled";
+  }
+
   return (
     <section className="card stack" aria-labelledby="uploaded-audio-title">
       <div>
-        <p className="question-number">Practice / Authorized Demo · v0.4</p>
+        <p className="question-number">Practice / Authorized Demo · v0.5</p>
         <h2 id="uploaded-audio-title">Uploaded Audio</h2>
       </div>
       <p>
-        Upload a prerecorded file you are authorized to process. Uploading does
-        not transcribe it; transcription runs only after you select the visible
-        <strong> Transcribe</strong> action.
+        Uploading never transcribes. The visible Transcribe action queues bounded
+        local processing and returns immediately.
       </p>
       <p className="muted">
-        v0.4 performs no speaker diarization. Choose one role for the whole
-        file. It does not capture a microphone, system/tab audio, or another
-        application.
+        One declared role applies to the whole file. There is no diarization,
+        microphone, system/tab capture, scoring, or answer generation.
       </p>
       <div className="form-grid">
         <label>
@@ -209,70 +292,68 @@ export function UploadedAudioPanel({
           type="button"
           disabled={!file || Boolean(busyId)}
           onClick={() => void upload()}
+          aria-label="Upload selected practice audio"
         >
           Upload audio
         </button>
       </div>
-      {error ? (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      ) : null}
+      {error ? <p className="error" role="alert">{error}</p> : null}
       {assets.length ? (
         <ol className="segment-timeline" data-testid="uploaded-audio-assets">
-          {assets.map((asset) => (
-            <li key={asset.id} data-testid="uploaded-audio-asset">
-              <div className="message-head">
-                <strong>{asset.originalFilename}</strong>
-                <span data-testid="uploaded-audio-status">{asset.status}</span>
-              </div>
-              <p className="muted">
-                {asset.speakerRole} · {asset.mimeType} · {asset.byteSize} bytes
-                {asset.providerLabel ? ` · ${asset.providerLabel}` : ""}
-              </p>
-              {asset.status === "failed" ? (
-                <p className="error">
-                  Transcription failed safely ({asset.errorCode ?? "safe error"}
-                  ). Retry uses a new explicit action.
+          {assets.map((asset) => {
+            const active =
+              asset.latestJob?.status === "queued" ||
+              asset.latestJob?.status === "running";
+            const canRetry =
+              asset.latestJob?.status === "failed" && asset.status !== "deleting";
+            const canStart = !asset.latestJob && asset.status === "uploaded";
+            return (
+              <li key={asset.id} data-testid="uploaded-audio-asset" aria-busy={active}>
+                <div className="message-head">
+                  <strong>{asset.originalFilename}</strong>
+                  <span aria-live="polite" data-testid="uploaded-audio-status">
+                    {statusLabel(asset)}
+                  </span>
+                </div>
+                <p className="muted">
+                  {asset.speakerRole} · {asset.mimeType} · {asset.byteSize} bytes
+                  {asset.providerLabel ? ` · ${asset.providerLabel}` : ""}
                 </p>
-              ) : null}
-              <div className="actions compact-actions">
-                <button
-                  className="button secondary"
-                  type="button"
-                  disabled={
-                    Boolean(busyId) ||
-                    asset.status === "completed" ||
-                    asset.status === "transcribing" ||
-                    asset.status === "deleting"
-                  }
-                  onClick={() => void transcribe(asset.id)}
-                >
-                  {asset.status === "failed"
-                    ? "Retry Transcribe"
-                    : "Transcribe"}
-                </button>
-                <button
-                  className="button danger"
-                  type="button"
-                  disabled={Boolean(busyId) || asset.status === "transcribing"}
-                  onClick={() => void remove(asset.id)}
-                >
-                  {asset.status === "deleting"
-                    ? "Retry Delete"
-                    : "Delete uploaded audio"}
-                </button>
-              </div>
-            </li>
-          ))}
+                {asset.latestJob?.status === "failed" ? (
+                  <p className="error" role="alert">
+                    Transcription failed safely ({asset.latestJob.safeErrorCode ?? "safe error"}).
+                  </p>
+                ) : null}
+                <div className="actions compact-actions">
+                  <button
+                    className="button secondary"
+                    type="button"
+                    disabled={Boolean(busyId) || (!canStart && !canRetry)}
+                    onClick={() => void transcribe(asset.id)}
+                    aria-label={`${canRetry ? "Retry transcription for" : "Transcribe"} ${asset.originalFilename}`}
+                  >
+                    {canRetry ? "Retry Transcribe" : "Transcribe"}
+                  </button>
+                  <button
+                    className="button danger"
+                    type="button"
+                    disabled={Boolean(busyId) || asset.status === "deleting"}
+                    onClick={() => void remove(asset.id)}
+                    aria-label={`Delete uploaded audio ${asset.originalFilename}`}
+                  >
+                    {asset.status === "deleting" ? "Cancelling/deleting" : "Delete uploaded audio"}
+                  </button>
+                </div>
+              </li>
+            );
+          })}
         </ol>
       ) : (
         <p className="muted">No uploaded audio assets.</p>
       )}
       <p className="muted">
-        Deleting an asset removes its metadata and stored file bytes. Final
-        transcript segments already committed remain in Transcript Lab and are
-        deleted only with the analysis session.
+        Cancelling cannot stop provider code already in memory, but stale output
+        cannot commit. Final transcript segments already committed survive asset deletion.
       </p>
     </section>
   );

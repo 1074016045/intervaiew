@@ -8,6 +8,8 @@ const uploadedFinalsSchema = z
   .object({
     assetId: z.string().uuid(),
     actionId: z.string().uuid(),
+    jobId: z.string().uuid(),
+    leaseToken: z.string().min(1).max(200),
     providerLabel: z.string().trim().min(1).max(80),
     speakerRole: z.enum(["interviewer", "candidate"]),
     chunks: z
@@ -106,7 +108,8 @@ export class TranscriptIngestionService {
     if (
       result.kind === "asset-not-found" ||
       result.kind === "asset-state-invalid" ||
-      result.kind === "action-invalid"
+      result.kind === "action-invalid" ||
+      result.kind === "job-invalid"
     )
       throw new QuestionIntelligenceError(
         "TRANSCRIPT_SEGMENT_INVALID",

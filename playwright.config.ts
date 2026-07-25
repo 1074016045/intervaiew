@@ -30,6 +30,7 @@ export default defineConfig({
       RECORDINGS_ENABLED: "true",
       RECORDINGS_PATH: join(e2eDirectory, "recordings"),
       UPLOADED_AUDIO_ENABLED: "true",
+      UPLOADED_AUDIO_TRANSCRIPTION_WORKER_ENABLED: "true",
       UPLOADED_AUDIO_FAKE_TRANSCRIPTION_ENABLED: "true",
       UPLOADED_AUDIO_MAX_BYTES: "26214400",
       UPLOADED_AUDIO_PATH: join(e2eDirectory, "uploaded-audio"),

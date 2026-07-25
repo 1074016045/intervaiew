@@ -86,12 +86,14 @@ describe("Uploaded Audio Fake provider", () => {
       speakerRole: "interviewer",
       mimeType: "audio/wav",
       bytes: wavBytes(),
+      signal: new AbortController().signal,
     });
     const candidate = await provider.transcribe({
       assetId: sessionId,
       speakerRole: "candidate",
       mimeType: "audio/wav",
       bytes: wavBytes(),
+      signal: new AbortController().signal,
     });
     expect(interviewer).toHaveLength(2);
     expect(interviewer[0]?.text).toContain("project");
@@ -106,6 +108,7 @@ describe("Uploaded Audio Fake provider", () => {
       speakerRole: "interviewer" as const,
       mimeType: "audio/wav",
       bytes: wavBytes(),
+      signal: new AbortController().signal,
     };
     await expect(provider.transcribe(input)).rejects.toThrow(/configured/);
     await expect(provider.transcribe(input)).resolves.toHaveLength(2);

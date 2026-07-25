@@ -4,7 +4,7 @@
 
 IntervAIew is a local-first, practice-only application for creating personalized fixed question plans and completing deterministic text or guided realtime voice mock interviews. It is not designed for hidden assistance in real interviews, monitoring evasion, recruitment tests, or unconsented recording.
 
-## v0.4 features
+## v0.5 features
 
 - Create practice sessions from a role, optional company, interview type, difficulty, language, resume text, and job description.
 - Generate 3–10 fixed questions with offline Mock, DeepSeek, or OpenAI text providers.
@@ -24,7 +24,7 @@ IntervAIew is a local-first, practice-only application for creating personalized
 
 This version does **not** include generated follow-ups, free-running interview agents, scoring, coaching, suggested answers, accounts, cloud storage, system-audio/screen capture, phone/SIP, analytics, or multi-agent orchestration.
 
-Transcript Lab includes Question Boundary Detector, Question Understanding v0.3, and Uploaded Audio v0.4, but still does **not** include diarization, resume evidence retrieval, candidate-experience matching, scoring, answer generation, real microphone/system/tab capture, or a real OpenAI/DeepSeek streaming connection.
+Transcript Lab includes Question Boundary Detector, Question Understanding v0.3, and asynchronous Uploaded Audio v0.5, but still does **not** include diarization, resume evidence retrieval, candidate-experience matching, scoring, answer generation, real microphone/system/tab capture, or a real uploaded-audio transcription provider.
 
 ## Stack
 
@@ -50,6 +50,7 @@ TRANSCRIPT_LAB_FAKE_ENABLED=true
 QUESTION_BOUNDARY_FAKE_SEMANTIC_ENABLED=true
 QUESTION_UNDERSTANDING_FAKE_SEMANTIC_ENABLED=true
 UPLOADED_AUDIO_ENABLED=true
+UPLOADED_AUDIO_TRANSCRIPTION_WORKER_ENABLED=true
 UPLOADED_AUDIO_FAKE_TRANSCRIPTION_ENABLED=true
 UPLOADED_AUDIO_MAX_BYTES=26214400
 UPLOADED_AUDIO_PATH=./data/uploaded-audio
@@ -62,15 +63,15 @@ Run migrations, start the app, and open `http://localhost:3000/lab/transcript`. 
 
 Transcript Lab makes no OpenAI or DeepSeek request, requires no API key, and produces no AI API charge. Its automated coverage is included in `pnpm test` and `pnpm test:e2e`.
 
-## Uploaded Audio v0.4
+## Uploaded Audio v0.5
 
 Uploaded Audio is limited to practice, authorized demonstrations, and research recordings the user is authorized to process. Select a WAV, MP3, M4A/MP4, OGG, WebM, or FLAC file, declare `interviewer` or `candidate` for the whole file, then choose **Upload audio**. Upload stores the validated bytes and safe metadata but does not transcribe. A separate visible **Transcribe** action is required.
 
-Uploaded Audio and its Fake transcription adapter both default to disabled. Enable them explicitly only for authorized development/test use. The multipart endpoint requires a valid `Content-Length` no larger than the file limit plus 64 KiB of multipart overhead; v0.4 intentionally rejects unknown-length/chunked uploads before parsing to avoid unbounded request buffering.
+Uploaded Audio, its embedded worker, and its Fake transcription adapter all default to disabled. Authorized non-production development requires all three explicit flags. The multipart endpoint requires a valid `Content-Length` no larger than the file limit plus 64 KiB of multipart overhead and rejects unknown-length/chunked uploads before parsing.
 
-v0.4 performs no speaker diarization: the declared role applies to every produced segment. Successful transcription produces finalized segments only through the existing Transcript Lab ingestion boundary. Interviewer segments therefore enter the existing Question Boundary and Question Understanding pipeline; candidate segments do not become automatic question candidates. GET/page load never transcribes.
+The Transcribe POST atomically creates or reuses a SQLite job and returns immediately. A bounded local Node worker claims one job at a time with a fixed 120-second lease and a 90-second provider-attempt timeout. It retries temporary failures after 1 second and 5 seconds, with three attempts maximum and a 30-second policy cap. Provider/filesystem work stays outside database transactions. Provider invocation is at least once after lease recovery; the guarded completion transaction gives exactly-once committed transcript effect and rejects stale, expired, cancelled, or deleted work.
 
-The bundled transcription provider is deterministic, network-free Fake behavior for automated tests and explicitly enabled non-production development. It cannot be enabled in production. No real uploaded-audio provider was added: although the installed OpenAI SDK is typed, production audio/provider policy and retention behavior require a separate rollout rather than an implicit model choice. Production transcription therefore remains disabled in v0.4.
+The bundled provider remains deterministic and network-free. No real provider exists in v0.5. The embedded worker requires a long-lived local Node process and never starts in production; serverless/short-lived deployment needs a future external worker design. Cancellation invalidates the lease and safely discards stale output, although provider code already running in memory may continue until it observes abort or returns.
 
 Deleting an uploaded asset uses a durable staged-delete plan so database and filesystem failures can be retried safely. Successful deletion removes metadata and stored bytes. Final transcript segments already committed remain in the analysis session; their nullable source link is cleared by the database foreign key. Delete the analysis session to remove those transcript segments. Upload, transcription, and deletion use session-scoped action receipts for idempotency.
 
@@ -173,7 +174,7 @@ The Transcript Lab API uses these routes:
 - `GET`, `PATCH`, and `DELETE /api/analysis-sessions/[id]` read, transition, or idempotently delete it.
 - `POST /api/analysis-sessions/[id]/transcript-segments` accepts final chunks only. A repeated provider segment ID returns the existing row with `duplicated=true`; a different provider ID reusing a sequence returns `TRANSCRIPT_SEGMENT_SEQUENCE_CONFLICT`.
 - `GET` and multipart `POST /api/analysis-sessions/[id]/uploaded-audio` list or explicitly upload an asset. Upload requires an action ID, one declared role, and one validated file.
-- `POST /api/analysis-sessions/[id]/uploaded-audio/[assetId]/transcribe` requires a strict `{actionId}` body and is the only route that requests transcription.
+- `POST /api/analysis-sessions/[id]/uploaded-audio/[assetId]/transcribe` requires a strict `{actionId}` body, atomically enqueues/reuses a job, and returns `202` without waiting for provider work (`200` only when the same action's job is already terminal).
 - `DELETE /api/analysis-sessions/[id]/uploaded-audio/[assetId]` requires a strict `{actionId}` body and removes bytes/metadata while preserving committed transcript segments.
 - `GET /api/analysis-sessions/[id]/question-boundary` returns the current candidate, deterministic signals, decision audit, and finalized questions.
 - `POST` routes below `question-boundary/evaluate`, `force-finalize`, `merge-previous`, and `undo` require strict bodies and an `actionId`.
@@ -191,7 +192,7 @@ Browser UI → RealtimeInterviewClient → OpenAI WebRTC | explicit non-producti
 Browser media → separate candidate/interviewer recorders → safe local storage API
 FakeTranscriptStreamClient → TranscriptBuffer → TranscriptIngestionService → Analysis Repository → SQLite
 Explicit audio upload → UploadedAudioService → safe filesystem + SQLite metadata
-Explicit Transcribe → AudioTranscriptionProvider (non-production Fake) → TranscriptIngestionService
+POST /transcribe → enqueue SQLite transcription job → return 202 → local worker claims job → storage read → Fake provider → lease-guarded atomic transcript completion
 Final Transcript Segments → QuestionCandidateBuilder → Deterministic/Hybrid Detector → QuestionSegmentationService → SQLite
 Active Finalized Questions → Deterministic/Hybrid Understander → QuestionUnderstandingService → SQLite
 ```
