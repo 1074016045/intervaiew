@@ -152,6 +152,44 @@ The default database is `./data/intervaiew.db`; optional guided-voice recordings
 
 Candidate and interviewer audio tracks are stored separately and are never embedded in TXT/JSON export. Delete a recording from Detail, or delete an interview to remove associated files and metadata. Input transcription may not be word-for-word exact and is not used for scoring.
 
+## Database backup and offline restore
+
+Database backups contain the same sensitive local data as the source SQLite database, including resume, job-description, question, answer, and transcript data. Protect, retain, and delete each artifact pair deliberately. Backup encryption, compression, and cloud backup are not implemented. Recordings and Uploaded Audio file bytes are not included; this is a database backup, not a complete application backup.
+
+Create a consistent online SQLite backup in the default `./data/backups` directory:
+
+```bash
+pnpm --silent db:backup
+```
+
+The command accepts `--database <path>`, `--output-dir <directory>`, and `--name <safe-name>`. Keep `--silent` on administrative invocations so pnpm does not echo absolute path arguments in its script banner. The two-file artifact is `<backup-name>.sqlite` plus `<backup-name>.manifest.json`; keep the pair together. Validate a pair before relying on it or moving it:
+
+```bash
+pnpm --silent db:backup:validate -- --manifest ./data/backups/<backup-name>.manifest.json
+```
+
+Add `--json` for a bounded machine-readable validation result. Restore is a standalone offline administrative command; there is no browser or web restore UI. A dry run validates without writing and does not require an offline assertion:
+
+```bash
+pnpm --silent db:restore -- --manifest ./data/backups/<backup-name>.manifest.json --database ./data/restored.db --dry-run
+```
+
+Before a write restore, stop `pnpm dev`, `pnpm start`, and the embedded Uploaded Audio worker. `--confirm-offline` is the operator's assertion that they are stopped; it is not automatic process detection or a process lock. Create a new destination with:
+
+```bash
+pnpm --silent db:restore -- --manifest ./data/backups/<backup-name>.manifest.json --database ./data/restored.db --confirm-offline
+```
+
+An existing destination is never overwritten unless both `--replace` and `--confirm-offline` are supplied:
+
+```bash
+pnpm --silent db:restore -- --manifest ./data/backups/<backup-name>.manifest.json --database ./data/intervaiew.db --replace --confirm-offline --pre-restore-backup-dir ./data/pre-restore-backups
+```
+
+Replacement first creates and validates a pre-restore safety backup, which is never deleted automatically. Restore never runs migrations. Run `pnpm db:migrate` separately only after intentionally selecting an application version and deciding to upgrade the restored data. After validating retained backups and confirming they are no longer needed, delete both the `.sqlite` and matching `.manifest.json` files together; also remove any intentionally retained pre-restore pair. Retention and deletion are manual; do not delete only one half and mistake the remainder for a usable backup.
+
+Handled restore failures roll back exact original database and sidecar bytes. The multi-file database/WAL/SHM sequence is not atomic across sudden process termination, host failure, or power loss. An interrupted attempt leaves a fail-closed lock or recovery files for manual inspection; use the retained pre-restore pair for recovery. The command is not crash-proof and is not disaster-recovery certification.
+
 See [PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md), and [ETHICAL_USE.md](ETHICAL_USE.md).
 
 ## Commands
@@ -159,6 +197,9 @@ See [PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md), and [ETHICAL_USE.md](E
 ```bash
 pnpm db:generate
 pnpm db:migrate
+pnpm --silent db:backup
+pnpm --silent db:backup:validate -- --manifest <path>
+pnpm --silent db:restore -- --manifest <path> --dry-run
 pnpm lint
 pnpm typecheck
 pnpm test
