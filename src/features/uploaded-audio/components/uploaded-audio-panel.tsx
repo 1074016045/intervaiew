@@ -21,24 +21,32 @@ export function UploadedAudioPanel({
   sessionId: string;
   onTranscriptCommitted: () => Promise<void>;
 }) {
-  const [assets, setAssets] = useState<ReadonlyArray<UploadedAudioAssetView>>([]);
+  const [assets, setAssets] = useState<ReadonlyArray<UploadedAudioAssetView>>(
+    [],
+  );
   const [maximumBytes, setMaximumBytes] = useState(0);
   const [speakerRole, setSpeakerRole] =
     useState<UploadedAudioSpeakerRole>("interviewer");
   const [file, setFile] = useState<File | null>(null);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
   const mountedRef = useRef(false);
   const pollTimerRef = useRef<number | null>(null);
   const pollingRequestRef = useRef(false);
   const pollAbortRef = useRef<AbortController | null>(null);
+  const actionAbortRef = useRef<AbortController | null>(null);
+  const loadRequestSequenceRef = useRef(0);
+  const onTranscriptCommittedRef = useRef(onTranscriptCommitted);
   const notifiedCompletedJobs = useRef(new Set<string>());
   const assetsRef = useRef<ReadonlyArray<UploadedAudioAssetView>>([]);
   const scheduleNextPollRef = useRef<() => void>(() => undefined);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
+      const requestSequence = ++loadRequestSequenceRef.current;
       const response = await fetch(
         `/api/analysis-sessions/${sessionId}/uploaded-audio`,
         { cache: "no-store", signal },
@@ -47,24 +55,39 @@ export function UploadedAudioPanel({
         assets?: ReadonlyArray<UploadedAudioAssetView>;
         maximumBytes?: number;
       } & ApiErrorPayload;
+      if (
+        !mountedRef.current ||
+        signal?.aborted ||
+        requestSequence !== loadRequestSequenceRef.current
+      )
+        return undefined;
       if (!response.ok || !payload.assets)
         throw new Error(
           payload.error?.message ?? "Uploaded audio could not be loaded.",
         );
-      if (!mountedRef.current) return payload.assets;
       assetsRef.current = payload.assets;
       setAssets(payload.assets);
       setMaximumBytes(payload.maximumBytes ?? 0);
       for (const asset of payload.assets) {
         const job = asset.latestJob;
-        if (job?.status !== "completed" || notifiedCompletedJobs.current.has(job.id))
+        if (
+          !mountedRef.current ||
+          job?.status !== "completed" ||
+          notifiedCompletedJobs.current.has(job.id)
+        )
           continue;
         notifiedCompletedJobs.current.add(job.id);
-        await onTranscriptCommitted();
+        await onTranscriptCommittedRef.current();
       }
+      if (
+        !mountedRef.current ||
+        signal?.aborted ||
+        requestSequence !== loadRequestSequenceRef.current
+      )
+        return undefined;
       return payload.assets;
     },
-    [onTranscriptCommitted, sessionId],
+    [sessionId],
   );
 
   const stopPolling = useCallback(() => {
@@ -81,22 +104,33 @@ export function UploadedAudioPanel({
       if (!mountedRef.current || pollTimerRef.current !== null) return;
       pollTimerRef.current = window.setTimeout(async () => {
         pollTimerRef.current = null;
-        if (!mountedRef.current || pollingRequestRef.current) return;
+        if (!mountedRef.current) return;
+        if (pollingRequestRef.current) {
+          scheduleNextPollRef.current();
+          return;
+        }
         pollingRequestRef.current = true;
         const controller = new AbortController();
         pollAbortRef.current = controller;
         try {
           const current = await load(controller.signal);
-          if (mountedRef.current && current && hasActiveJob(current))
-            scheduleNextPollRef.current();
+          if (mountedRef.current) {
+            setError("");
+            if (current && hasActiveJob(current)) scheduleNextPollRef.current();
+          }
         } catch (caught) {
-          if (!(caught instanceof DOMException && caught.name === "AbortError")) {
+          if (
+            mountedRef.current &&
+            !controller.signal.aborted &&
+            !(caught instanceof DOMException && caught.name === "AbortError")
+          ) {
             setError(
               caught instanceof Error
                 ? caught.message
                 : "Uploaded audio could not be loaded.",
             );
-            if (mountedRef.current) scheduleNextPollRef.current();
+            if (hasActiveJob(assetsRef.current))
+              scheduleNextPollRef.current();
           }
         } finally {
           pollingRequestRef.current = false;
@@ -106,6 +140,10 @@ export function UploadedAudioPanel({
     },
     [load],
   );
+
+  useEffect(() => {
+    onTranscriptCommittedRef.current = onTranscriptCommitted;
+  }, [onTranscriptCommitted]);
 
   useEffect(() => {
     scheduleNextPollRef.current = () => schedulePoll();
@@ -119,12 +157,20 @@ export function UploadedAudioPanel({
         if (current && hasActiveJob(current)) schedulePoll();
       })
       .catch((caught) => {
-        if (!(caught instanceof DOMException && caught.name === "AbortError"))
+        if (
+          mountedRef.current &&
+          !controller.signal.aborted &&
+          !(caught instanceof DOMException && caught.name === "AbortError")
+        )
           setError(
             caught instanceof Error
               ? caught.message
               : "Uploaded audio could not be loaded.",
           );
+      })
+      .finally(() => {
+        if (mountedRef.current && !controller.signal.aborted)
+          setInitialLoading(false);
       });
     const visibilityChanged = () => {
       if (!hasActiveJob(assetsRef.current)) return;
@@ -134,7 +180,10 @@ export function UploadedAudioPanel({
     document.addEventListener("visibilitychange", visibilityChanged);
     return () => {
       mountedRef.current = false;
+      loadRequestSequenceRef.current += 1;
       controller.abort();
+      actionAbortRef.current?.abort();
+      actionAbortRef.current = null;
       stopPolling();
       document.removeEventListener("visibilitychange", visibilityChanged);
     };
@@ -144,6 +193,8 @@ export function UploadedAudioPanel({
     if (!file || busyId) return;
     setBusyId("upload");
     setError("");
+    const controller = new AbortController();
+    actionAbortRef.current = controller;
     try {
       const formData = new FormData();
       formData.set("actionId", crypto.randomUUID());
@@ -151,18 +202,32 @@ export function UploadedAudioPanel({
       formData.set("file", file);
       const response = await fetch(
         `/api/analysis-sessions/${sessionId}/uploaded-audio`,
-        { method: "POST", body: formData, cache: "no-store" },
+        {
+          method: "POST",
+          body: formData,
+          cache: "no-store",
+          signal: controller.signal,
+        },
       );
       const payload = (await response.json()) as ApiErrorPayload;
       if (!response.ok)
         throw new Error(payload.error?.message ?? "Audio upload failed.");
+      if (!mountedRef.current || controller.signal.aborted) return;
       setFile(null);
       if (inputRef.current) inputRef.current.value = "";
-      await load();
+      await load(controller.signal);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Audio upload failed.");
+      if (
+        mountedRef.current &&
+        !controller.signal.aborted &&
+        !(caught instanceof DOMException && caught.name === "AbortError")
+      )
+        setError(
+          caught instanceof Error ? caught.message : "Audio upload failed.",
+        );
     } finally {
-      setBusyId(null);
+      if (actionAbortRef.current === controller) actionAbortRef.current = null;
+      if (mountedRef.current) setBusyId(null);
     }
   }
 
@@ -170,6 +235,8 @@ export function UploadedAudioPanel({
     if (busyId) return;
     setBusyId(assetId);
     setError("");
+    const controller = new AbortController();
+    actionAbortRef.current = controller;
     try {
       const response = await fetch(
         `/api/analysis-sessions/${sessionId}/uploaded-audio/${assetId}/transcribe`,
@@ -178,6 +245,7 @@ export function UploadedAudioPanel({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ actionId: crypto.randomUUID() }),
           cache: "no-store",
+          signal: controller.signal,
         },
       );
       const payload = (await response.json()) as ApiErrorPayload;
@@ -185,17 +253,26 @@ export function UploadedAudioPanel({
         throw new Error(
           payload.error?.message ?? "Audio transcription could not be queued.",
         );
-      const current = await load();
-      if (response.status === 202 && current && hasActiveJob(current)) schedulePoll();
+      if (!mountedRef.current || controller.signal.aborted) return;
+      const current = await load(controller.signal);
+      if (response.status === 202 && current && hasActiveJob(current))
+        schedulePoll();
     } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "Audio transcription could not be queued.",
-      );
-      await load().catch(() => undefined);
+      if (
+        mountedRef.current &&
+        !controller.signal.aborted &&
+        !(caught instanceof DOMException && caught.name === "AbortError")
+      ) {
+        setError(
+          caught instanceof Error
+            ? caught.message
+            : "Audio transcription could not be queued.",
+        );
+        await load(controller.signal).catch(() => undefined);
+      }
     } finally {
-      setBusyId(null);
+      if (actionAbortRef.current === controller) actionAbortRef.current = null;
+      if (mountedRef.current) setBusyId(null);
     }
   }
 
@@ -208,7 +285,10 @@ export function UploadedAudioPanel({
     )
       return;
     setBusyId(assetId);
+    setDeletingId(assetId);
     setError("");
+    const controller = new AbortController();
+    actionAbortRef.current = controller;
     try {
       const response = await fetch(
         `/api/analysis-sessions/${sessionId}/uploaded-audio/${assetId}`,
@@ -217,25 +297,41 @@ export function UploadedAudioPanel({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ actionId: crypto.randomUUID() }),
           cache: "no-store",
+          signal: controller.signal,
         },
       );
       const payload = (await response.json()) as ApiErrorPayload;
       if (!response.ok)
         throw new Error(payload.error?.message ?? "Audio deletion failed.");
-      const current = await load();
-      if (!current || !hasActiveJob(current)) stopPolling();
+      if (!mountedRef.current || controller.signal.aborted) return;
+      stopPolling();
+      const current = await load(controller.signal);
+      if (current && hasActiveJob(current)) schedulePoll();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Audio deletion failed.");
+      if (
+        mountedRef.current &&
+        !controller.signal.aborted &&
+        !(caught instanceof DOMException && caught.name === "AbortError")
+      )
+        setError(
+          caught instanceof Error ? caught.message : "Audio deletion failed.",
+        );
     } finally {
-      setBusyId(null);
+      if (actionAbortRef.current === controller) actionAbortRef.current = null;
+      if (mountedRef.current) {
+        setBusyId(null);
+        setDeletingId(null);
+      }
     }
   }
 
   function statusLabel(asset: UploadedAudioAssetView) {
-    if (asset.status === "deleting") return "Cancelling/deleting";
+    if (deletingId === asset.id || asset.status === "deleting")
+      return "Cancelling/deleting";
     const job = asset.latestJob;
     if (!job) return asset.status === "completed" ? "Completed" : asset.status;
-    if (job.status === "queued") return job.attemptCount > 0 ? "Retrying" : "Queued";
+    if (job.status === "queued")
+      return job.attemptCount > 0 ? "Retrying" : "Queued";
     if (job.status === "running") return "Transcribing";
     if (job.status === "completed") return "Completed";
     if (job.status === "failed") return "Failed";
@@ -249,8 +345,8 @@ export function UploadedAudioPanel({
         <h2 id="uploaded-audio-title">Uploaded Audio</h2>
       </div>
       <p>
-        Uploading never transcribes. The visible Transcribe action queues bounded
-        local processing and returns immediately.
+        Uploading never transcribes. The visible Transcribe action queues
+        bounded local processing and returns immediately.
       </p>
       <p className="muted">
         One declared role applies to the whole file. There is no diarization,
@@ -297,18 +393,33 @@ export function UploadedAudioPanel({
           Upload audio
         </button>
       </div>
-      {error ? <p className="error" role="alert">{error}</p> : null}
-      {assets.length ? (
+      {error ? (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {initialLoading ? (
+        <p className="muted" role="status">
+          Loading uploaded audio…
+        </p>
+      ) : assets.length ? (
         <ol className="segment-timeline" data-testid="uploaded-audio-assets">
           {assets.map((asset) => {
             const active =
               asset.latestJob?.status === "queued" ||
               asset.latestJob?.status === "running";
+            const deleting =
+              deletingId === asset.id || asset.status === "deleting";
             const canRetry =
-              asset.latestJob?.status === "failed" && asset.status !== "deleting";
+              asset.latestJob?.status === "failed" &&
+              asset.status !== "deleting";
             const canStart = !asset.latestJob && asset.status === "uploaded";
             return (
-              <li key={asset.id} data-testid="uploaded-audio-asset" aria-busy={active}>
+              <li
+                key={asset.id}
+                data-testid="uploaded-audio-asset"
+                aria-busy={active || busyId === asset.id || deleting}
+              >
                 <div className="message-head">
                   <strong>{asset.originalFilename}</strong>
                   <span aria-live="polite" data-testid="uploaded-audio-status">
@@ -316,12 +427,14 @@ export function UploadedAudioPanel({
                   </span>
                 </div>
                 <p className="muted">
-                  {asset.speakerRole} · {asset.mimeType} · {asset.byteSize} bytes
+                  {asset.speakerRole} · {asset.mimeType} · {asset.byteSize}{" "}
+                  bytes
                   {asset.providerLabel ? ` · ${asset.providerLabel}` : ""}
                 </p>
                 {asset.latestJob?.status === "failed" ? (
                   <p className="error" role="alert">
-                    Transcription failed safely ({asset.latestJob.safeErrorCode ?? "safe error"}).
+                    Transcription failed safely (
+                    {asset.latestJob.safeErrorCode ?? "safe error"}).
                   </p>
                 ) : null}
                 <div className="actions compact-actions">
@@ -337,11 +450,15 @@ export function UploadedAudioPanel({
                   <button
                     className="button danger"
                     type="button"
-                    disabled={Boolean(busyId) || asset.status === "deleting"}
+                    disabled={Boolean(busyId) || deleting}
                     onClick={() => void remove(asset.id)}
-                    aria-label={`Delete uploaded audio ${asset.originalFilename}`}
+                    aria-label={`${
+                      deleting
+                        ? "Cancelling/deleting uploaded audio"
+                        : "Delete uploaded audio"
+                    } ${asset.originalFilename}`}
                   >
-                    {asset.status === "deleting" ? "Cancelling/deleting" : "Delete uploaded audio"}
+                    {deleting ? "Cancelling/deleting" : "Delete uploaded audio"}
                   </button>
                 </div>
               </li>
@@ -353,7 +470,8 @@ export function UploadedAudioPanel({
       )}
       <p className="muted">
         Cancelling cannot stop provider code already in memory, but stale output
-        cannot commit. Final transcript segments already committed survive asset deletion.
+        cannot commit. Final transcript segments already committed survive asset
+        deletion.
       </p>
     </section>
   );
