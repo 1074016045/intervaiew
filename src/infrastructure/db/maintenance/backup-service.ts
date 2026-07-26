@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { constants } from "node:fs";
 import {
   chmod,
   link,
@@ -8,6 +9,7 @@ import {
   realpath,
   unlink,
   writeFile,
+  type FileHandle,
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import Database from "better-sqlite3";
@@ -46,6 +48,7 @@ export type BackupDependencies = Readonly<{
   writeFile: typeof writeFile;
   afterLockAcquired?: () => void | Promise<void>;
   afterDatabasePublication?: () => void | Promise<void>;
+  afterManifestPublication?: () => void | Promise<void>;
 }>;
 
 const defaultDependencies: BackupDependencies = {
@@ -130,6 +133,54 @@ async function unlinkOwned(
   }
 }
 
+async function openPublishedOwnership(
+  path: string,
+  expectedIdentity: FileIdentity,
+  openFile: typeof open,
+): Promise<FileHandle> {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await openFile(
+      path,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+    );
+    const opened = await handle.stat();
+    if (!opened.isFile() || !sameIdentity(opened, expectedIdentity))
+      throw maintenanceError(
+        "BACKUP_PUBLICATION_OWNERSHIP_FAILED",
+        "Published backup artifact ownership could not be retained safely.",
+      );
+    return handle;
+  } catch (cause) {
+    await handle?.close().catch(() => undefined);
+    if (cause instanceof Error && cause.name === "DatabaseMaintenanceError")
+      throw cause;
+    throw maintenanceError(
+      "BACKUP_PUBLICATION_OWNERSHIP_FAILED",
+      "Published backup artifact ownership could not be retained safely.",
+      cause,
+    );
+  }
+}
+
+async function unlinkOwnedByHandle(
+  path: string,
+  ownershipHandle: FileHandle | undefined,
+  unlinkFile: typeof unlink,
+): Promise<boolean> {
+  if (!ownershipHandle) return false;
+  try {
+    const owned = await ownershipHandle.stat();
+    const current = await lstat(path);
+    if (!sameIdentity(current, owned)) return false;
+    await unlinkFile(path);
+    return true;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return true;
+    return false;
+  }
+}
+
 async function normalizeOwnedSnapshot(path: string): Promise<void> {
   let connection: Database.Database | undefined;
   try {
@@ -186,17 +237,15 @@ export async function createDatabaseBackup(
   const lockPath = join(outputDirectory, `.${name}.backup.lock`);
   let lockHandle: Awaited<ReturnType<typeof open>> | undefined;
   let connection: Database.Database | undefined;
-  let lockIdentity: FileIdentity | undefined;
   let temporaryDatabaseIdentity: FileIdentity | undefined;
   let temporaryManifestIdentity: FileIdentity | undefined;
-  let databasePublishedIdentity: FileIdentity | undefined;
-  let manifestPublishedIdentity: FileIdentity | undefined;
+  let databaseOwnershipHandle: FileHandle | undefined;
+  let manifestOwnershipHandle: FileHandle | undefined;
   let completed = false;
 
   try {
     try {
       lockHandle = await dependencies.open(lockPath, "wx", 0o600);
-      lockIdentity = await lockHandle.stat();
     } catch (cause) {
       throw maintenanceError(
         "BACKUP_NAME_IN_USE",
@@ -269,7 +318,11 @@ export async function createDatabaseBackup(
     temporaryManifestIdentity = await lstat(temporaryManifestPath);
 
     await dependencies.link(temporaryDatabasePath, databasePath);
-    databasePublishedIdentity = temporaryDatabaseIdentity;
+    databaseOwnershipHandle = await openPublishedOwnership(
+      databasePath,
+      temporaryDatabaseIdentity,
+      dependencies.open,
+    );
     if (
       !(await unlinkOwned(
         temporaryDatabasePath,
@@ -284,7 +337,11 @@ export async function createDatabaseBackup(
     temporaryDatabaseIdentity = undefined;
     await dependencies.afterDatabasePublication?.();
     await dependencies.link(temporaryManifestPath, manifestPath);
-    manifestPublishedIdentity = temporaryManifestIdentity;
+    manifestOwnershipHandle = await openPublishedOwnership(
+      manifestPath,
+      temporaryManifestIdentity,
+      dependencies.open,
+    );
     if (
       !(await unlinkOwned(
         temporaryManifestPath,
@@ -297,14 +354,12 @@ export async function createDatabaseBackup(
         "Backup temporary-file cleanup failed safely.",
       );
     temporaryManifestIdentity = undefined;
-    await lockHandle.close();
-    lockHandle = undefined;
-    if (!(await unlinkOwned(lockPath, lockIdentity, dependencies.unlink)))
+    await dependencies.afterManifestPublication?.();
+    if (!(await unlinkOwnedByHandle(lockPath, lockHandle, dependencies.unlink)))
       throw maintenanceError(
         "BACKUP_LOCK_CLEANUP_FAILED",
         "Backup lock cleanup failed safely.",
       );
-    lockIdentity = undefined;
     completed = true;
     return { name, databasePath, manifestPath, manifest };
   } catch (cause) {
@@ -321,16 +376,15 @@ export async function createDatabaseBackup(
     } catch {
       // Owned files and the lock still require cleanup.
     }
-    await lockHandle?.close().catch(() => undefined);
     if (!completed) {
-      await unlinkOwned(
+      await unlinkOwnedByHandle(
         manifestPath,
-        manifestPublishedIdentity,
+        manifestOwnershipHandle,
         dependencies.unlink,
       );
-      await unlinkOwned(
+      await unlinkOwnedByHandle(
         databasePath,
-        databasePublishedIdentity,
+        databaseOwnershipHandle,
         dependencies.unlink,
       );
     }
@@ -344,6 +398,9 @@ export async function createDatabaseBackup(
       temporaryDatabaseIdentity,
       dependencies.unlink,
     );
-    await unlinkOwned(lockPath, lockIdentity, dependencies.unlink);
+    await unlinkOwnedByHandle(lockPath, lockHandle, dependencies.unlink);
+    await manifestOwnershipHandle?.close().catch(() => undefined);
+    await databaseOwnershipHandle?.close().catch(() => undefined);
+    await lockHandle?.close().catch(() => undefined);
   }
 }

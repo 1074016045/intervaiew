@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  constants,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -8,8 +9,9 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { link, open, unlink, type FileHandle } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import Database from "better-sqlite3";
 import {
   createDatabaseBackup,
@@ -274,6 +276,251 @@ describe("database backup and validation", () => {
       "pre-existing-race-winner",
     );
     expect(readdirSync(backupsPath)).toEqual(["ownership-race.sqlite"]);
+  });
+
+  it("preserves a database replacement when a later manifest step fails", async () => {
+    const finalDatabase = join(backupsPath, "later-race.sqlite");
+    await expect(
+      createDatabaseBackup(
+        {
+          databasePath: sourcePath,
+          outputDirectory: backupsPath,
+          name: "later-race",
+        },
+        {
+          afterDatabasePublication: () => {
+            unlinkSync(finalDatabase);
+            writeFileSync(finalDatabase, "later-database-replacement");
+          },
+          afterManifestPublication: () => {
+            throw new Error("later synthetic failure");
+          },
+        },
+      ),
+    ).rejects.toThrow(/could not be created safely/i);
+    expect(readFileSync(finalDatabase, "utf8")).toBe(
+      "later-database-replacement",
+    );
+    expect(readdirSync(backupsPath)).toEqual(["later-race.sqlite"]);
+  });
+
+  it("preserves a manifest replacement and removes its owned database", async () => {
+    const finalManifest = join(backupsPath, "manifest-race.manifest.json");
+    await expect(
+      createDatabaseBackup(
+        {
+          databasePath: sourcePath,
+          outputDirectory: backupsPath,
+          name: "manifest-race",
+        },
+        {
+          afterManifestPublication: () => {
+            unlinkSync(finalManifest);
+            writeFileSync(finalManifest, "manifest-replacement");
+            throw new Error("synthetic manifest replacement failure");
+          },
+        },
+      ),
+    ).rejects.toThrow(/could not be created safely/i);
+    expect(readFileSync(finalManifest, "utf8")).toBe("manifest-replacement");
+    expect(readdirSync(backupsPath)).toEqual(["manifest-race.manifest.json"]);
+  });
+
+  it("removes both owned published files after a later failure", async () => {
+    await expect(
+      createDatabaseBackup(
+        {
+          databasePath: sourcePath,
+          outputDirectory: backupsPath,
+          name: "owned-publications",
+        },
+        {
+          afterManifestPublication: () => {
+            throw new Error("synthetic post-manifest failure");
+          },
+        },
+      ),
+    ).rejects.toThrow(/could not be created safely/i);
+    expect(readdirSync(backupsPath)).toEqual([]);
+  });
+
+  it.each(["database", "manifest"])(
+    "fails closed when the %s pathname is swapped between link and ownership open",
+    async (kind) => {
+      const name = `pre-open-${kind}-race`;
+      const finalPath = join(
+        backupsPath,
+        kind === "database" ? `${name}.sqlite` : `${name}.manifest.json`,
+      );
+      const ownershipHandles: FileHandle[] = [];
+      const trackedOpen: typeof open = async (path, flags, mode) => {
+        const handle = await open(path, flags, mode);
+        if (
+          flags === (constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)) &&
+          !String(path).startsWith(join(backupsPath, "."))
+        )
+          ownershipHandles.push(handle);
+        return handle;
+      };
+      let thrown: unknown;
+      try {
+        await createDatabaseBackup(
+          { databasePath: sourcePath, outputDirectory: backupsPath, name },
+          {
+            open: trackedOpen,
+            link: async (existingPath, newPath) => {
+              await link(existingPath, newPath);
+              if (basename(String(newPath)) === basename(finalPath)) {
+                unlinkSync(finalPath);
+                writeFileSync(finalPath, `unowned-${kind}-replacement`);
+              }
+            },
+          },
+        );
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(Error);
+      expect((thrown as Error).message).toMatch(
+        /ownership could not be retained safely/i,
+      );
+      expect((thrown as Error).message).not.toContain(directory);
+      expect((thrown as Error).message).not.toContain("unowned-");
+      expect(readFileSync(finalPath, "utf8")).toBe(
+        `unowned-${kind}-replacement`,
+      );
+      expect(readdirSync(backupsPath)).toEqual([
+        kind === "database" ? `${name}.sqlite` : `${name}.manifest.json`,
+      ]);
+      expect(ownershipHandles).toHaveLength(kind === "database" ? 1 : 2);
+      for (const handle of ownershipHandles)
+        await expect(handle.stat()).rejects.toMatchObject({ code: "EBADF" });
+    },
+  );
+
+  it.each([
+    "success",
+    "database failure",
+    "database temporary cleanup failure",
+    "manifest failure",
+    "manifest temporary cleanup failure",
+    "lock cleanup failure",
+  ])("closes publication ownership handles on %s", async (scenario) => {
+    const ownershipHandles: FileHandle[] = [];
+    let injectedUnlinkFailure = false;
+    const trackedOpen: typeof open = async (path, flags, mode) => {
+      const handle = await open(path, flags, mode);
+      if (
+        flags === (constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)) &&
+        !String(path).startsWith(join(backupsPath, "."))
+      )
+        ownershipHandles.push(handle);
+      return handle;
+    };
+    const backup = createDatabaseBackup(
+      {
+        databasePath: sourcePath,
+        outputDirectory: backupsPath,
+        name: `handle-${scenario
+          .split(" ")
+          .map((word) => word[0])
+          .join("")}`,
+      },
+      {
+        open: trackedOpen,
+        unlink: async (path) => {
+          const filename = basename(String(path));
+          const shouldFail =
+            (scenario === "database temporary cleanup failure" &&
+              filename.endsWith(".sqlite.tmp")) ||
+            (scenario === "manifest temporary cleanup failure" &&
+              filename.endsWith(".manifest.tmp")) ||
+            (scenario === "lock cleanup failure" &&
+              filename.endsWith(".backup.lock"));
+          if (shouldFail && !injectedUnlinkFailure) {
+            injectedUnlinkFailure = true;
+            const error = new Error("synthetic cleanup failure");
+            Object.assign(error, { code: "EACCES" });
+            throw error;
+          }
+          await unlink(path);
+        },
+        afterDatabasePublication:
+          scenario === "database failure"
+            ? () => {
+                throw new Error("synthetic database handle failure");
+              }
+            : undefined,
+        afterManifestPublication:
+          scenario === "manifest failure"
+            ? () => {
+                throw new Error("synthetic manifest handle failure");
+              }
+            : undefined,
+      },
+    );
+    if (scenario === "success") await expect(backup).resolves.toBeDefined();
+    else
+      await expect(backup).rejects.toThrow(
+        /could not be created safely|cleanup failed safely/i,
+      );
+    expect(ownershipHandles).toHaveLength(
+      scenario === "database failure" ||
+        scenario === "database temporary cleanup failure"
+        ? 1
+        : 2,
+    );
+    for (const handle of ownershipHandles)
+      await expect(handle.stat()).rejects.toMatchObject({ code: "EBADF" });
+    expect(
+      readdirSync(backupsPath).some(
+        (filename) => filename.startsWith(".") || filename.endsWith(".tmp"),
+      ),
+    ).toBe(false);
+  });
+
+  it("closes ownership handles and leaves no temporary or lock files when cleanup unlink fails", async () => {
+    const name = "unlink-cleanup-failure";
+    const ownershipHandles: FileHandle[] = [];
+    const trackedOpen: typeof open = async (path, flags, mode) => {
+      const handle = await open(path, flags, mode);
+      if (
+        flags === (constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)) &&
+        !String(path).startsWith(join(backupsPath, "."))
+      )
+        ownershipHandles.push(handle);
+      return handle;
+    };
+    let thrown: unknown;
+    try {
+      await createDatabaseBackup(
+        { databasePath: sourcePath, outputDirectory: backupsPath, name },
+        {
+          open: trackedOpen,
+          unlink: async (path) => {
+            if (basename(String(path)) === `${name}.manifest.json`) {
+              const error = new Error("synthetic-sensitive-unlink-content");
+              Object.assign(error, { code: "EACCES" });
+              throw error;
+            }
+            await unlink(path);
+          },
+          afterManifestPublication: () => {
+            throw new Error("synthetic-sensitive-callback-content");
+          },
+        },
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const publicMessage = (thrown as Error).message;
+    expect(publicMessage).toMatch(/could not be created safely/i);
+    expect(publicMessage).not.toContain(directory);
+    expect(publicMessage).not.toContain("synthetic-sensitive");
+    expect(readdirSync(backupsPath)).toEqual([`${name}.manifest.json`]);
+    for (const handle of ownershipHandles)
+      await expect(handle.stat()).rejects.toMatchObject({ code: "EBADF" });
   });
 
   it("cleans temporary files and final manifests after validation failure", async () => {
