@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createDatabaseBackup } from "@/infrastructure/db/maintenance/backup-service";
 import {
@@ -86,7 +86,7 @@ describe("database maintenance CLI", () => {
 
   afterEach(() => removeTemporaryDirectory(directory));
 
-  it("backs up successfully with content-free output", async () => {
+  it("restores the existing backup text output contract", async () => {
     expect(
       await runBackupCli(
         [
@@ -101,10 +101,15 @@ describe("database maintenance CLI", () => {
       ),
     ).toBe(0);
     expect(existsSync(join(backupDirectory, "cli-backup.sqlite"))).toBe(true);
-    expect(output.join("\n")).not.toContain(sourcePath);
-    expect(output.join("\n")).not.toContain(
-      "never-print-sensitive-row-content",
+    const manifest = JSON.parse(
+      readFileSync(join(backupDirectory, "cli-backup.manifest.json"), "utf8"),
     );
+    expect(output).toEqual([
+      "Backup created: cli-backup.sqlite",
+      `Bytes: ${manifest.databaseBytes}`,
+      `SHA-256: ${manifest.databaseSha256}`,
+      "Validation: valid",
+    ]);
     expect(errors).toEqual([]);
   });
 
@@ -121,12 +126,32 @@ describe("database maintenance CLI", () => {
       ),
     ).toBe(0);
     expect(output).toHaveLength(1);
-    expect(JSON.parse(output[0])).toMatchObject({
+    expect(JSON.parse(output[0])).toEqual({
       valid: true,
       formatVersion: 1,
+      databaseBytes: backup.manifest.databaseBytes,
+      databaseSha256: backup.manifest.databaseSha256,
       migrationCount: 7,
     });
     expect(output[0]).not.toContain(backup.manifestPath);
+    expect(errors).toEqual([]);
+  });
+
+  it("restores the existing validation text output contract", async () => {
+    const backup = await createDatabaseBackup({
+      databasePath: sourcePath,
+      outputDirectory: backupDirectory,
+      name: "text-validation-backup",
+    });
+    expect(
+      await runValidateBackupCli(["--manifest", backup.manifestPath], io),
+    ).toBe(0);
+    expect(output).toEqual([
+      "Backup valid: text-validation-backup.manifest.json",
+      `Bytes: ${backup.manifest.databaseBytes}`,
+      `SHA-256: ${backup.manifest.databaseSha256}`,
+      `Migrations: ${backup.manifest.migrationCount}`,
+    ]);
     expect(errors).toEqual([]);
   });
 
@@ -185,6 +210,43 @@ describe("database maintenance CLI", () => {
     ]);
   });
 
+  it("reports the retained pre-restore backup by its safe name", async () => {
+    const selected = await createDatabaseBackup({
+      databasePath: sourcePath,
+      outputDirectory: backupDirectory,
+      name: "replacement-source",
+    });
+    const preRestoreDirectory = join(directory, "pre-restore-backups");
+    expect(
+      await runRestoreCli(
+        [
+          "--manifest",
+          selected.manifestPath,
+          "--database",
+          sourcePath,
+          "--replace",
+          "--confirm-offline",
+          "--pre-restore-backup-dir",
+          preRestoreDirectory,
+        ],
+        io,
+      ),
+    ).toBe(0);
+    expect(output[0]).toBe("Database replaced safely.");
+    expect(output[1]).toMatch(
+      /^Pre-restore backup: [A-Za-z0-9][A-Za-z0-9_-]{0,79}$/,
+    );
+    const retainedName = output[1].slice("Pre-restore backup: ".length);
+    expect(readdirSync(preRestoreDirectory).sort()).toEqual([
+      `${retainedName}.manifest.json`,
+      `${retainedName}.sqlite`,
+    ]);
+    expect(output.slice(2)).toEqual([
+      "Restore validation: valid",
+      "Migrations were not run. Run pnpm db:migrate separately only for an intentional upgrade.",
+    ]);
+  });
+
   it.each([
     [runBackupCli, ["--unknown"]],
     [runBackupCli, ["--name"]],
@@ -236,12 +298,26 @@ describe("database maintenance CLI", () => {
       "subprocess-backup",
     ]);
     expect(result.code).toBe(0);
-    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      event: "maintenance.backup.completed",
+      operation: "backup",
+      outcome: "succeeded",
+    });
+    expect(result.stderr).not.toContain(sourcePath);
+    expect(result.stderr).not.toContain("never-print-sensitive-row-content");
+    expect(result.stderr).not.toContain("subprocess-backup");
     expect(result.stdout).not.toContain(sourcePath);
     expect(result.stdout).not.toContain("never-print-sensitive-row-content");
     expect(
       existsSync(join(subprocessBackups, "subprocess-backup.sqlite")),
     ).toBe(true);
+    const subprocessManifest = JSON.parse(
+      readFileSync(
+        join(subprocessBackups, "subprocess-backup.manifest.json"),
+        "utf8",
+      ),
+    );
+    expect(result.stderr).not.toContain(subprocessManifest.databaseSha256);
     expect(existsSync(join(directory, "data", "intervaiew.db"))).toBe(false);
   });
 
@@ -257,7 +333,13 @@ describe("database maintenance CLI", () => {
       "--json",
     ]);
     expect(result.code).toBe(1);
-    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      event: "maintenance.validation.failed",
+      operation: "validation",
+      outcome: "failed",
+    });
+    expect(result.stderr).not.toContain(sentinelPath);
+    expect(result.stderr).not.toContain(directory);
     expect(JSON.parse(result.stdout)).toMatchObject({ valid: false });
     expect(result.stdout).not.toContain(sentinelPath);
     expect(result.stdout).not.toContain(directory);

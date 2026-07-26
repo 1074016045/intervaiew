@@ -6,18 +6,33 @@ import {
   argumentString,
   parseStrictArguments,
 } from "./cli-arguments";
-import { maintenanceError, safeMaintenanceMessage } from "./maintenance-error";
+import {
+  maintenanceError,
+  safeMaintenanceCode,
+  safeMaintenanceMessage,
+} from "./maintenance-error";
 import { restoreDatabase } from "./restore-service";
+import {
+  operationalEventLogger,
+  type OperationalEventInput,
+  type OperationalEventLogger,
+} from "../../logging/safe-operational-event";
 
 export type CliIo = Readonly<{
   out: (message: string) => void;
   error: (message: string) => void;
+  event?: OperationalEventLogger;
 }>;
 
 const processIo: CliIo = {
   out: (message) => console.log(message),
   error: (message) => console.error(message),
+  event: operationalEventLogger,
 };
+
+function emit(io: CliIo, event: OperationalEventInput): void {
+  io.event?.emit(event);
+}
 
 export const BACKUP_USAGE = `Usage: pnpm --silent db:backup -- [options]
 
@@ -49,6 +64,7 @@ export async function runBackupCli(
   arguments_: readonly string[],
   io: CliIo = processIo,
 ): Promise<number> {
+  const startedAt = Date.now();
   try {
     const parsed = parseStrictArguments(arguments_, [
       { name: "database", kind: "value" },
@@ -72,8 +88,24 @@ export async function runBackupCli(
     io.out(`Bytes: ${result.manifest.databaseBytes}`);
     io.out(`SHA-256: ${result.manifest.databaseSha256}`);
     io.out("Validation: valid");
+    emit(io, {
+      level: "info",
+      event: "maintenance.backup.completed",
+      operation: "backup",
+      outcome: "succeeded",
+      durationMs: Math.max(0, Date.now() - startedAt),
+      databaseByteCount: result.manifest.databaseBytes,
+    });
     return 0;
   } catch (error) {
+    emit(io, {
+      level: "error",
+      event: "maintenance.backup.failed",
+      operation: "backup",
+      outcome: "failed",
+      errorCode: safeMaintenanceCode(error),
+      durationMs: Math.max(0, Date.now() - startedAt),
+    });
     io.error(`Error: ${safeMaintenanceMessage(error)}`);
     return 1;
   }
@@ -83,6 +115,7 @@ export async function runValidateBackupCli(
   arguments_: readonly string[],
   io: CliIo = processIo,
 ): Promise<number> {
+  const startedAt = Date.now();
   let json = arguments_.includes("--json");
   try {
     const parsed = parseStrictArguments(arguments_, [
@@ -118,8 +151,24 @@ export async function runValidateBackupCli(
       io.out(`SHA-256: ${result.manifest.databaseSha256}`);
       io.out(`Migrations: ${result.manifest.migrationCount}`);
     }
+    emit(io, {
+      level: "info",
+      event: "maintenance.validation.completed",
+      operation: "validation",
+      outcome: "succeeded",
+      durationMs: Math.max(0, Date.now() - startedAt),
+      databaseByteCount: result.manifest.databaseBytes,
+    });
     return 0;
   } catch (error) {
+    emit(io, {
+      level: "error",
+      event: "maintenance.validation.failed",
+      operation: "validation",
+      outcome: "failed",
+      errorCode: safeMaintenanceCode(error),
+      durationMs: Math.max(0, Date.now() - startedAt),
+    });
     const message = safeMaintenanceMessage(error);
     if (json) io.out(JSON.stringify({ valid: false, error: message }));
     else io.error(`Error: ${message}`);
@@ -131,6 +180,7 @@ export async function runRestoreCli(
   arguments_: readonly string[],
   io: CliIo = processIo,
 ): Promise<number> {
+  const startedAt = Date.now();
   try {
     const parsed = parseStrictArguments(arguments_, [
       { name: "manifest", kind: "value" },
@@ -179,8 +229,26 @@ export async function runRestoreCli(
         "Migrations were not run. Run pnpm db:migrate separately only for an intentional upgrade.",
       );
     }
+    emit(io, {
+      level: "info",
+      event: result.dryRun
+        ? "maintenance.restore.dry_run_completed"
+        : "maintenance.restore.completed",
+      operation: "restore",
+      outcome: result.dryRun ? "dry_run_succeeded" : "succeeded",
+      durationMs: Math.max(0, Date.now() - startedAt),
+      databaseByteCount: result.databaseBytes,
+    });
     return 0;
   } catch (error) {
+    emit(io, {
+      level: "error",
+      event: "maintenance.restore.failed",
+      operation: "restore",
+      outcome: "failed",
+      errorCode: safeMaintenanceCode(error),
+      durationMs: Math.max(0, Date.now() - startedAt),
+    });
     io.error(`Error: ${safeMaintenanceMessage(error)}`);
     return 1;
   }

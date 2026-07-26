@@ -21,3 +21,10 @@ export function safeMaintenanceMessage(error: unknown): string {
     ? error.message.slice(0, 200)
     : "Database maintenance operation failed safely.";
 }
+
+export function safeMaintenanceCode(error: unknown): string {
+  return error instanceof DatabaseMaintenanceError &&
+    /^[A-Z0-9_]{1,80}$/.test(error.code)
+    ? error.code
+    : "DATABASE_MAINTENANCE_FAILED";
+}
