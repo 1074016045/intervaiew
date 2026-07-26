@@ -48,7 +48,9 @@ The worker is an explicitly enabled non-production embedded Node loop using only
 
 The first increment covers Uploaded Audio accessibility improvements and deterministic component-level polling tests. It adds automated accessibility regression coverage for loading, status, busy, error, keyboard, focus, and destructive-action behavior, together with controlled-timer coverage for polling, visibility changes, failures, recovery, aborts, and unmount cleanup.
 
-Remaining v0.6 work: database backup/import, configurable retention, and content-free observability.
+The second increment implements local SQLite online backup, strict format-versioned manifest validation, content-free validation CLI output, and offline create-new/replacement restore. Replacement requires an explicit offline assertion, retains a validated pre-restore safety backup, validates a same-directory candidate, and rolls back the original database on handled replacement or post-installation validation failure. Backup encryption, compression, media-file backup, cloud storage, and a restore web UI are intentionally not included. Sudden process termination and power loss remain bounded manual-recovery cases rather than crash-atomic guarantees.
+
+Remaining v0.6 work: configurable retention and content-free observability.
 
 ## Later candidates
 

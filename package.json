@@ -17,7 +17,10 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "node --import tsx src/infrastructure/db/migrate.ts"
+    "db:migrate": "node --import tsx src/infrastructure/db/migrate.ts",
+    "db:backup": "node --import tsx scripts/database-backup.ts",
+    "db:backup:validate": "node --import tsx scripts/database-backup-validate.ts",
+    "db:restore": "node --import tsx scripts/database-restore.ts"
   },
   "dependencies": {
     "@openai/agents": "^0.13.5",
