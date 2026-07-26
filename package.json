@@ -20,7 +20,9 @@
     "db:migrate": "node --import tsx src/infrastructure/db/migrate.ts",
     "db:backup": "node --import tsx scripts/database-backup.ts",
     "db:backup:validate": "node --import tsx scripts/database-backup-validate.ts",
-    "db:restore": "node --import tsx scripts/database-restore.ts"
+    "db:backup:retention": "node --import tsx scripts/database-backup-retention.ts",
+    "db:restore": "node --import tsx scripts/database-restore.ts",
+    "ops:status": "node --import tsx scripts/operations-status.ts"
   },
   "dependencies": {
     "@openai/agents": "^0.13.5",

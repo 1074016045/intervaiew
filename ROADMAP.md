@@ -44,13 +44,15 @@ Implemented: asynchronous enqueue/reuse responses, persistent five-state jobs, c
 
 The worker is an explicitly enabled non-production embedded Node loop using only the deterministic Fake provider. It provides at-least-once provider invocation and exactly-once committed transcript effect. A real provider, production/background deployment, external queue, Redis, object storage, auth, diarization, capture, answers, and scoring remain future/out of scope.
 
-## v0.6 (in progress): Accessibility and local operations
+## v0.6 (complete): Accessibility and local operations
 
 The first increment covers Uploaded Audio accessibility improvements and deterministic component-level polling tests. It adds automated accessibility regression coverage for loading, status, busy, error, keyboard, focus, and destructive-action behavior, together with controlled-timer coverage for polling, visibility changes, failures, recovery, aborts, and unmount cleanup.
 
-The second increment implements local SQLite online backup, strict format-versioned manifest validation, content-free validation CLI output, and offline create-new/replacement restore. Replacement requires an explicit offline assertion, retains a validated pre-restore safety backup, validates a same-directory candidate, and rolls back the original database on handled replacement or post-installation validation failure. Backup encryption, compression, media-file backup, cloud storage, and a restore web UI are intentionally not included. Sudden process termination and power loss remain bounded manual-recovery cases rather than crash-atomic guarantees.
+The second increment implements local SQLite online backup, strict format-versioned manifest validation with operator-facing artifact metadata, and offline create-new/replacement restore. Replacement requires an explicit offline assertion, retains a validated pre-restore safety backup, validates a same-directory candidate, and rolls back the original database on handled replacement or post-installation validation failure. Backup encryption, compression, media-file backup, cloud storage, and a restore web UI are intentionally not included. Sudden process termination and power loss remain bounded manual-recovery cases rather than crash-atomic guarantees.
 
-Remaining v0.6 work: configurable retention and content-free observability.
+The final increment adds explicit configurable retention for validated direct-child SQLite backup pairs, with dry-run by default, manifest-createdAt age selection, newest-pair protection, exclusive locking, ownership-pinned same-directory staging, handled-failure rollback, and fail-closed recovery residue. It also adds closed-schema local maintenance events on stderr and a read-only content-free operations-status CLI covering database integrity/migrations, backup inventory, transcription-job states, pending deletion batches, and retention configuration.
+
+Retention never runs automatically and does not delete application rows, recordings, Uploaded Audio bytes, unknown files, or recovery residue. Status and events make no external request and implement no telemetry, analytics, metrics export, persistence, or log shipping. Sudden termination and power loss remain documented manual-recovery limits rather than crash-atomic guarantees. With these boundaries, v0.6 is complete.
 
 ## Later candidates
 

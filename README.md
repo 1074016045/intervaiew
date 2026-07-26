@@ -4,7 +4,7 @@
 
 IntervAIew is a local-first, practice-only application for creating personalized fixed question plans and completing deterministic text or guided realtime voice mock interviews. It is not designed for hidden assistance in real interviews, monitoring evasion, recruitment tests, or unconsented recording.
 
-## v0.5 features
+## v0.6 features
 
 - Create practice sessions from a role, optional company, interview type, difficulty, language, resume text, and job description.
 - Generate 3–10 fixed questions with offline Mock, DeepSeek, or OpenAI text providers.
@@ -21,6 +21,8 @@ IntervAIew is a local-first, practice-only application for creating personalized
 - Explicitly analyze active finalized questions into revision-bound language, family, answer-mode, requested-dimension, constraint, focus-term, clarification, confidence, and provenance metadata.
 - Explicitly upload authorized prerecorded audio to an existing Transcript Lab session, declare one whole-file speaker role, and separately request deterministic Fake transcription into finalized Transcript Lab segments.
 - Restore uploaded-asset metadata and completed transcript state after refresh, safely retry failed transcription, and delete file bytes/metadata without silently deleting committed transcript segments.
+- Create and validate local SQLite backup pairs, perform explicitly confirmed offline restore, and apply an explicit backup-pair retention policy with dry-run as the default.
+- Inspect a bounded, read-only local operations snapshot and receive content-free maintenance events on stderr without telemetry, analytics, log shipping, or persistent log files.
 
 This version does **not** include generated follow-ups, free-running interview agents, scoring, coaching, suggested answers, accounts, cloud storage, system-audio/screen capture, phone/SIP, analytics, or multi-agent orchestration.
 
@@ -152,7 +154,7 @@ The default database is `./data/intervaiew.db`; optional guided-voice recordings
 
 Candidate and interviewer audio tracks are stored separately and are never embedded in TXT/JSON export. Delete a recording from Detail, or delete an interview to remove associated files and metadata. Input transcription may not be word-for-word exact and is not used for scoring.
 
-## Database backup and offline restore
+## Database backup, retention, status, and offline restore
 
 Database backups contain the same sensitive local data as the source SQLite database, including resume, job-description, question, answer, and transcript data. Protect, retain, and delete each artifact pair deliberately. Backup encryption, compression, and cloud backup are not implemented. Recordings and Uploaded Audio file bytes are not included; this is a database backup, not a complete application backup.
 
@@ -190,6 +192,56 @@ Replacement first creates and validates a pre-restore safety backup, which is ne
 
 Handled restore failures roll back exact original database and sidecar bytes. The multi-file database/WAL/SHM sequence is not atomic across sudden process termination, host failure, or power loss. An interrupted attempt leaves a fail-closed lock or recovery files for manual inspection; use the retained pre-restore pair for recovery. The command is not crash-proof and is not disaster-recovery certification.
 
+Backup retention applies only to strict direct-child `<safe-name>.sqlite` and `<safe-name>.manifest.json` database-backup pairs. It never deletes interview or analysis sessions, transcripts, questions, recording files, Uploaded Audio bytes or jobs, application content, unknown files, temporary files, locks, WAL/SHM files, or recovery residue. It never runs automatically: there is no scheduler, startup deletion, web request, API, or browser retention UI.
+
+Configuration defaults are `BACKUP_RETENTION_DIRECTORY=./data/backups`, `BACKUP_RETENTION_MAX_AGE_DAYS=30`, and `BACKUP_RETENTION_KEEP_LATEST=3`. Maximum age is a strict integer from 1 through 36500; keep-latest is a strict integer from 1 through 10000. CLI values override environment values. Merely configuring them performs no action. Dry-run is the default:
+
+```bash
+pnpm --silent db:backup:retention -- --dry-run
+
+pnpm --silent db:backup:retention -- \
+  --directory ./data/backups \
+  --max-age-days 30 \
+  --keep-latest 3 \
+  --dry-run
+
+pnpm --silent db:backup:retention -- \
+  --max-age-days 30 \
+  --keep-latest 3 \
+  --dry-run \
+  --json
+```
+
+Apply requires both explicit flags and never prompts or infers consent from a terminal:
+
+```bash
+pnpm --silent db:backup:retention -- \
+  --directory ./data/backups \
+  --max-age-days 30 \
+  --keep-latest 3 \
+  --apply \
+  --confirm-delete
+```
+
+Manifest `createdAt`, not filesystem mtime, is authoritative. A valid pair is eligible only when it is strictly older than the configured age and outside the newest `keepLatest` valid pairs; at least that many valid pairs always remain. Invalid, incomplete, unsupported, unsafe, unknown, or nested artifacts are counted but never deleted. The default directory does not include replacement restore's default `pre-restore-backups` safety directory. Point retention at another directory only through an explicit invocation after reviewing its contents.
+
+Apply holds one exclusive directory operation lock, pins both selected artifacts with non-following handles, rechecks path identity before each mutation, and stages same-directory recovery links before removing normal names. A handled mid-pair failure restores the original pair when safe. If safe rollback or cleanup cannot finish, clearly non-normal recovery residue remains and later runs refuse automatic continuation. Sudden process termination, host failure, or power loss is not crash-atomic and can require manual inspection.
+
+Read local operational status without migrations, writes, cleanup retries, work enqueueing, or network access:
+
+```bash
+pnpm --silent ops:status
+pnpm --silent ops:status -- --json
+pnpm --silent ops:status -- \
+  --database ./data/intervaiew.db \
+  --backup-directory ./data/backups \
+  --json
+```
+
+Status reports only database reachability/integrity and migration facts, backup counts, transcription-job state counts, pending deletion-batch counts, and the configured retention policy. To avoid creating or changing SQLite sidecars, status inspects a pinned in-memory byte snapshot and degrades if WAL/SHM sidecars are present; run it against a quiescent/checkpointed database for a healthy result. Healthy status exits 0; degraded or unavailable required resources exit nonzero, while JSON mode still writes exactly one bounded JSON value to stdout.
+
+Retention command results, operations-status results, and closed-schema newline-delimited maintenance events on stderr contain only bounded operational fields. Those three surfaces exclude paths, filenames, backup names, hashes, credentials, IDs, SQL, timestamps from individual backups, user content, provider payloads, causes, and stacks. Existing backup, validation, and restore human stdout intentionally retains its operator-facing contract: safe artifact basenames plus byte counts and SHA-256 values where applicable. Maintenance events never repeat that artifact metadata. Events stay local and ephemeral: there is no telemetry, analytics, metrics export, persistent log file, log shipping, cloud request, or other external request.
+
 See [PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md), and [ETHICAL_USE.md](ETHICAL_USE.md).
 
 ## Commands
@@ -199,7 +251,9 @@ pnpm db:generate
 pnpm db:migrate
 pnpm --silent db:backup
 pnpm --silent db:backup:validate -- --manifest <path>
+pnpm --silent db:backup:retention -- --dry-run
 pnpm --silent db:restore -- --manifest <path> --dry-run
+pnpm --silent ops:status -- --json
 pnpm lint
 pnpm typecheck
 pnpm test
