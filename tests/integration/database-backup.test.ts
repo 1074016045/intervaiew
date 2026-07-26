@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  constants,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -27,6 +26,29 @@ import {
   removeTemporaryDirectory,
   temporaryDatabaseDirectory,
 } from "../helpers/database-maintenance";
+
+function createTrackedPublishedOpen(
+  name: string,
+  ownershipHandles: FileHandle[],
+): typeof open {
+  const publishedNames = new Set([
+    `${name}.sqlite`,
+    `${name}.manifest.json`,
+  ]);
+
+  return async (path, flags, mode) => {
+    const handle = await open(path, flags, mode);
+
+    if (
+      typeof flags === "number" &&
+      publishedNames.has(basename(String(path)))
+    ) {
+      ownershipHandles.push(handle);
+    }
+
+    return handle;
+  };
+}
 
 describe("database backup and validation", () => {
   let directory: string;
@@ -353,15 +375,7 @@ describe("database backup and validation", () => {
         kind === "database" ? `${name}.sqlite` : `${name}.manifest.json`,
       );
       const ownershipHandles: FileHandle[] = [];
-      const trackedOpen: typeof open = async (path, flags, mode) => {
-        const handle = await open(path, flags, mode);
-        if (
-          flags === (constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)) &&
-          !String(path).startsWith(join(backupsPath, "."))
-        )
-          ownershipHandles.push(handle);
-        return handle;
-      };
+      const trackedOpen = createTrackedPublishedOpen(name, ownershipHandles);
       let thrown: unknown;
       try {
         await createDatabaseBackup(
@@ -408,23 +422,16 @@ describe("database backup and validation", () => {
   ])("closes publication ownership handles on %s", async (scenario) => {
     const ownershipHandles: FileHandle[] = [];
     let injectedUnlinkFailure = false;
-    const trackedOpen: typeof open = async (path, flags, mode) => {
-      const handle = await open(path, flags, mode);
-      if (
-        flags === (constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)) &&
-        !String(path).startsWith(join(backupsPath, "."))
-      )
-        ownershipHandles.push(handle);
-      return handle;
-    };
+    const name = `handle-${scenario
+      .split(" ")
+      .map((word) => word[0])
+      .join("")}`;
+    const trackedOpen = createTrackedPublishedOpen(name, ownershipHandles);
     const backup = createDatabaseBackup(
       {
         databasePath: sourcePath,
         outputDirectory: backupsPath,
-        name: `handle-${scenario
-          .split(" ")
-          .map((word) => word[0])
-          .join("")}`,
+        name,
       },
       {
         open: trackedOpen,
@@ -482,15 +489,7 @@ describe("database backup and validation", () => {
   it("closes ownership handles and leaves no temporary or lock files when cleanup unlink fails", async () => {
     const name = "unlink-cleanup-failure";
     const ownershipHandles: FileHandle[] = [];
-    const trackedOpen: typeof open = async (path, flags, mode) => {
-      const handle = await open(path, flags, mode);
-      if (
-        flags === (constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)) &&
-        !String(path).startsWith(join(backupsPath, "."))
-      )
-        ownershipHandles.push(handle);
-      return handle;
-    };
+    const trackedOpen = createTrackedPublishedOpen(name, ownershipHandles);
     let thrown: unknown;
     try {
       await createDatabaseBackup(
@@ -519,6 +518,7 @@ describe("database backup and validation", () => {
     expect(publicMessage).not.toContain(directory);
     expect(publicMessage).not.toContain("synthetic-sensitive");
     expect(readdirSync(backupsPath)).toEqual([`${name}.manifest.json`]);
+    expect(ownershipHandles).toHaveLength(2);
     for (const handle of ownershipHandles)
       await expect(handle.stat()).rejects.toMatchObject({ code: "EBADF" });
   });
